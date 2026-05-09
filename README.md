@@ -14,6 +14,7 @@
 - 支持快捷键切换中英文输入模式，默认 `Ctrl+Space`。
 - IBus 状态栏/面板会显示当前输入模式：`中` 或 `英`。
 - 支持 SQLite 候选缓存，常用候选会被提升排序。
+- 支持导入 `.dict.json` 自定义领域词库，领域词会参与候选排序和 LLM 上下文纠错。
 - 模型失败或超时时不会阻塞输入，可按回车提交原始拼音。
 - 支持本地常用词兜底候选。
 - Ctrl、Alt、Super、Meta 快捷键以及功能键、方向键等会直通应用，避免被输入法屏蔽。
@@ -101,6 +102,11 @@ ibus engine ai-pinyin
       "key": "space",
       "modifiers": ["Control"]
     }
+  },
+  "dictionary": {
+    "enabled": true,
+    "path": "~/.config/ibus-ai-pinyin/cache.sqlite3",
+    "max_candidates": 5
   }
 }
 ```
@@ -226,6 +232,115 @@ llama-server \
 ```
 
 拼音输入过程中，原始拼音不会写入当前输入框。IBus 候选弹窗会显示当前拼音和候选结果，只有选择候选或回车提交时才会写入输入框。
+
+## 自定义领域词库
+
+输入法支持导入标准 `.dict.json` 词库。导入后，词库会有两种作用：
+
+- 短输入或完整词输入时，词库候选优先展示，例如 `hongling` 可命中 `鸿灵`。
+- 长拼音短语输入时，命中的领域词会作为上下文传给 LLM，并对 LLM 候选重排。例如输入 `honglingzhishikujiansuogongneng` 时，词库可提供 `鸿灵`、`知识库`、`搜索`，帮助模型输出 `鸿灵知识库搜索功能`。
+
+### 词库格式
+
+最小示例：
+
+```json
+{
+  "version": "1.0",
+  "name": "我的项目词库",
+  "entries": [
+    {
+      "term": "鸿灵",
+      "pinyin": ["hong ling"],
+      "short": ["hl"],
+      "type": "product",
+      "weight": 100,
+      "enabled": true
+    },
+    {
+      "term": "搜索",
+      "pinyin": ["sou suo", "jian suo"],
+      "short": ["ss"],
+      "type": "tech",
+      "weight": 85,
+      "enabled": true
+    }
+  ]
+}
+```
+
+`type` 只能使用以下值：
+
+```text
+product project system module feature organization person tech abbreviation business mixed other
+```
+
+不要使用 `concept`、`tool`、`algorithm`、`framework` 等非标准类型。完整格式见 [docs/dictionary-format-v1.md](docs/dictionary-format-v1.md)。
+
+### 使用 skill 生成词库
+
+项目内提供了 `ibus-ai-pinyin-dict-skill/`，可用于从项目文档、Wiki、术语表中生成 `.dict.json`。
+
+典型提示：
+
+```text
+请使用 ibus-ai-pinyin-domain-dictionary skill，
+从下面资料中提取适合输入法使用的专有名词，
+生成 dev/mydict.json 词库文件。
+```
+
+生成词库时注意：
+
+- 精准优先，不要把普通词大量加入词库。
+- 核心领域词必须提供完整 `pinyin`，不能只给 `short`。
+- 如果用户常输入同义词，但期望输出规范词，把同义输入的拼音也加到规范词的 `pinyin` 中。例如期望 `jiansuo` 输出 `搜索`，则写 `"pinyin": ["sou suo", "jian suo"]`。
+- 生成后先校验，再导入。
+
+### 校验和导入
+
+校验 skill 生成的词库：
+
+```bash
+python3 ibus-ai-pinyin-dict-skill/scripts/validate_dict.py dev/mydict.json
+```
+
+只检查导入效果，不写数据库：
+
+```bash
+python3 scripts/import-dictionary.py dev/mydict.json --dry-run
+```
+
+导入到默认数据库：
+
+```bash
+python3 scripts/import-dictionary.py dev/mydict.json
+```
+
+默认数据库路径：
+
+```text
+~/.config/ibus-ai-pinyin/cache.sqlite3
+```
+
+导入后重启 IBus：
+
+```bash
+ibus restart
+ibus engine ai-pinyin
+```
+
+### 缓存和 LLM 的关系
+
+候选来源会融合：
+
+```text
+领域词库候选
+LLM 新结果
+SQLite 历史缓存
+本地兜底候选
+```
+
+当长输入命中领域词上下文时，缓存不会直接截断请求，输入法仍会调用 LLM 补充结果；缓存只作为后备候选参与融合，避免旧缓存污染覆盖新的词库纠错结果。
 
 ## 日志和缓存
 

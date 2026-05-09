@@ -44,6 +44,15 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "path": "~/.config/ibus-ai-pinyin/cache.sqlite3",
     },
+    "dictionary": {
+        "enabled": True,
+        "path": "~/.config/ibus-ai-pinyin/cache.sqlite3",
+        "max_candidates": 5,
+        "priority": 90,
+        "match_compact_pinyin": True,
+        "match_short": True,
+        "auto_generate_pinyin": False,
+    },
     "debug": {
         "log_user_input": False,
         "log_model_output": False,

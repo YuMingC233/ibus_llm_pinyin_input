@@ -36,12 +36,17 @@ class LLMClient:
             "拼音：{pinyin}\n请输出中文候选 JSON 数组。",
         )
 
-    def get_candidates(self, pinyin, max_candidates=5):
+    def get_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+        user_content = self.user_template.format(pinyin=pinyin)
+        context_text = self.format_dictionary_context(dictionary_context or [])
+        if context_text:
+            user_content = f"{user_content}\n\n{context_text}"
+
         body = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": self.user_template.format(pinyin=pinyin)},
+                {"role": "user", "content": user_content},
             ],
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -95,8 +100,56 @@ class LLMClient:
             logging.info("LLM content empty, using reasoning_content fallback")
         logging.info("LLM raw output elapsed_ms=%s content=%r", elapsed_ms, content)
         candidates = self.parse_candidates(content, max_candidates=max_candidates)
+        candidates = self.rank_candidates_by_context(candidates, dictionary_context or [])
         logging.info("LLM parsed candidates elapsed_ms=%s candidates=%r", elapsed_ms, candidates)
         return candidates
+
+    def rank_candidates_by_context(self, candidates, items):
+        context_terms = []
+        seen = set()
+        for item in items:
+            text = item.get("text") if isinstance(item, dict) else str(item)
+            if text and text not in seen:
+                seen.add(text)
+                weight = item.get("weight", 50) if isinstance(item, dict) else 50
+                context_terms.append((text, weight))
+        if not context_terms:
+            return candidates
+
+        indexed = []
+        for index, candidate in enumerate(candidates):
+            score = 0
+            for term, weight in context_terms:
+                if term in candidate:
+                    score += 1000 + int(weight)
+            indexed.append((score, -index, candidate))
+        indexed.sort(reverse=True)
+        return [candidate for _score, _index, candidate in indexed]
+
+    def format_dictionary_context(self, items):
+        lines = []
+        seen = set()
+        for item in items:
+            text = item.get("text") if isinstance(item, dict) else str(item)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            pinyin = item.get("pinyin", "") if isinstance(item, dict) else ""
+            item_type = item.get("type", "") if isinstance(item, dict) else ""
+            detail = f"{text}"
+            if pinyin:
+                detail += f" ({pinyin})"
+            if item_type and item_type != "other":
+                detail += f" [{item_type}]"
+            lines.append(f"- {detail}")
+        if not lines:
+            return ""
+        return (
+            "领域词库命中：\n"
+            + "\n".join(lines)
+            + "\n请优先使用这些领域词转换拼音；如果用户输入的是长拼音短语，请把这些词自然组合进完整中文候选。"
+            + "\n命中项的拼音对应输入片段时，候选中必须使用命中词文本，不要替换成同音词、近义词或常见词。"
+        )
 
     def parse_candidates(self, content, max_candidates=5):
         text = content.strip()

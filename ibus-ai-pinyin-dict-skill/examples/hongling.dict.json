@@ -1,0 +1,102 @@
+{
+  "version": "1.0",
+  "name": "鸿灵项目词库",
+  "description": "鸿灵平台、Dify、AI 问数、知识库相关专有名词",
+  "source": "manual",
+  "locale": "zh-CN",
+  "entries": [
+    {
+      "term": "鸿灵",
+      "pinyin": [
+        "hong ling"
+      ],
+      "short": [
+        "hl"
+      ],
+      "type": "product",
+      "weight": 100,
+      "tags": [
+        "AI",
+        "企业助手"
+      ],
+      "comment": "AI 企业助手平台",
+      "enabled": true
+    },
+    {
+      "term": "鸿灵MCP工具",
+      "pinyin": [
+        "hong ling mcp gong ju"
+      ],
+      "short": [
+        "hlmcp",
+        "hlmcpgj"
+      ],
+      "aliases": [
+        "鸿灵 MCP",
+        "鸿灵MCP"
+      ],
+      "type": "module",
+      "weight": 95,
+      "tags": [
+        "Dify",
+        "MCP",
+        "知识库"
+      ],
+      "comment": "Dify 中使用的鸿灵 MCP 工具",
+      "enabled": true
+    },
+    {
+      "term": "智能生成大屏",
+      "pinyin": [
+        "zhi neng sheng cheng da ping"
+      ],
+      "short": [
+        "znscdp",
+        "daping"
+      ],
+      "type": "feature",
+      "weight": 90,
+      "tags": [
+        "鸿燕系统",
+        "大屏"
+      ],
+      "enabled": true
+    },
+    {
+      "term": "大渡口路灯项目",
+      "pinyin": [
+        "da du kou lu deng xiang mu"
+      ],
+      "short": [
+        "ddkldxm"
+      ],
+      "type": "project",
+      "weight": 90,
+      "enabled": true
+    },
+    {
+      "term": "Dify Workflow",
+      "pinyin": [
+        "dify workflow"
+      ],
+      "short": [
+        "dfwf"
+      ],
+      "type": "tech",
+      "weight": 80,
+      "enabled": true
+    },
+    {
+      "term": "OpenAI-compatible",
+      "pinyin": [
+        "openai compatible"
+      ],
+      "short": [
+        "oai"
+      ],
+      "type": "tech",
+      "weight": 70,
+      "enabled": true
+    }
+  ]
+}

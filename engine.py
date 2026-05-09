@@ -9,7 +9,9 @@ gi.require_version("IBus", "1.0")
 from gi.repository import GLib, IBus
 
 from ibus_ai_pinyin.cache import CandidateCache
+from ibus_ai_pinyin.candidate_ranker import merge_candidates
 from ibus_ai_pinyin.config import load_config
+from ibus_ai_pinyin.dictionary_store import DomainDictionaryStore
 from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
@@ -59,6 +61,13 @@ class AIPinyinEngine(IBus.Engine):
         self.cache_enabled = cache_cfg.get("enabled", True)
         self.cache = CandidateCache(
             cache_cfg.get("path", "~/.config/ibus-ai-pinyin/cache.sqlite3")
+        )
+
+        dict_cfg = self.config.get("dictionary", {})
+        self.dictionary_enabled = dict_cfg.get("enabled", True)
+        self.dictionary_max_candidates = dict_cfg.get("max_candidates", 5)
+        self.dictionary = DomainDictionaryStore(
+            dict_cfg.get("path", cache_cfg.get("path", "~/.config/ibus-ai-pinyin/cache.sqlite3"))
         )
 
         self.buffer = ""
@@ -230,17 +239,40 @@ class AIPinyinEngine(IBus.Engine):
         max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
         logging.info("candidate request started chars=%s", len(pinyin))
 
+        domain_candidates = []
+        dictionary_context = []
+        if self.dictionary_enabled:
+            domain_candidates = self.dictionary.get_candidates(
+                pinyin,
+                limit=self.dictionary_max_candidates,
+            )
+            if domain_candidates:
+                logging.info("domain dictionary candidates count=%s", len(domain_candidates))
+            dictionary_context = self.dictionary.get_context_items(
+                pinyin,
+                limit=self.dictionary_max_candidates,
+            )
+            if dictionary_context:
+                logging.info("domain dictionary context count=%s", len(dictionary_context))
+
+        cached = []
         if self.cache_enabled:
             cached = self.cache.get(pinyin, limit=max_candidates)
             if cached:
                 logging.info("candidate cache hit count=%s", len(cached))
-                self.show_candidates(cached)
-                return
 
         local_candidates = get_local_candidates(pinyin, limit=max_candidates)
         if local_candidates:
             logging.info("local candidates immediate count=%s", len(local_candidates))
-            self.show_candidates(local_candidates)
+
+        merged = merge_candidates(
+            domain_candidates,
+            cached,
+            local_candidates,
+            limit=max_candidates,
+        )
+        if len(merged) >= max_candidates:
+            self.show_candidates(merged)
             return
 
         self.is_requesting = True
@@ -248,13 +280,32 @@ class AIPinyinEngine(IBus.Engine):
 
         threading.Thread(
             target=self.fetch_candidates_worker,
-            args=(pinyin, max_candidates),
+            args=(
+                pinyin,
+                max_candidates,
+                domain_candidates,
+                cached,
+                local_candidates,
+                dictionary_context,
+            ),
             daemon=True,
         ).start()
 
-    def fetch_candidates_worker(self, pinyin, max_candidates):
+    def fetch_candidates_worker(
+        self,
+        pinyin,
+        max_candidates,
+        domain_candidates=None,
+        cached=None,
+        local_candidates=None,
+        dictionary_context=None,
+    ):
         try:
-            candidates = self.llm.get_candidates(pinyin, max_candidates=max_candidates)
+            candidates = self.llm.get_candidates(
+                pinyin,
+                max_candidates=max_candidates,
+                dictionary_context=dictionary_context or [],
+            )
             logging.info("LLM candidates ready count=%s", len(candidates))
         except Exception as exc:
             logging.warning("LLM request failed: %s", exc)
@@ -263,7 +314,23 @@ class AIPinyinEngine(IBus.Engine):
             candidates = get_local_candidates(pinyin, limit=max_candidates)
             if candidates:
                 logging.info("local candidates ready count=%s", len(candidates))
-        GLib.idle_add(self.on_candidates_ready, pinyin, candidates)
+        if dictionary_context:
+            merged = merge_candidates(
+                domain_candidates or [],
+                candidates,
+                cached or [],
+                local_candidates or [],
+                limit=max_candidates,
+            )
+        else:
+            merged = merge_candidates(
+                domain_candidates or [],
+                cached or [],
+                local_candidates or [],
+                candidates,
+                limit=max_candidates,
+            )
+        GLib.idle_add(self.on_candidates_ready, pinyin, merged)
 
     def on_candidates_ready(self, pinyin, candidates):
         self.is_requesting = False

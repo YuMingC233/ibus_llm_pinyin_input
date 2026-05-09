@@ -5,6 +5,9 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from ibus_ai_pinyin.cache import CandidateCache
+from ibus_ai_pinyin.candidate_ranker import merge_candidates
+from ibus_ai_pinyin.dictionary_format import normalize_dictionary
+from ibus_ai_pinyin.dictionary_store import DomainDictionaryStore
 from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
@@ -26,6 +29,10 @@ def test_parse_candidates():
         "报错",
         "bug",
     ]
+    assert client.rank_candidates_by_context(
+        ["鸿灵知识库检索功能", "鸿灵知识库搜索功能"],
+        [{"text": "鸿灵", "weight": 85}, {"text": "知识库", "weight": 90}, {"text": "搜索", "weight": 85}],
+    ) == ["鸿灵知识库搜索功能", "鸿灵知识库检索功能"]
 
 
 def test_cache_promote():
@@ -45,6 +52,87 @@ def test_local_candidates():
     assert get_local_candidates("unknown", limit=5) == []
 
 
+def test_merge_candidates_keeps_source_order_and_dedupes():
+    assert merge_candidates(["鸿灵MCP工具", "你好"], ["你好", "世界"], limit=3) == [
+        "鸿灵MCP工具",
+        "你好",
+        "世界",
+    ]
+    assert merge_candidates(
+        [],
+        ["鸿灵知识库搜索功能"],
+        ["红领巾知识库检索功能"],
+        limit=5,
+    ) == ["鸿灵知识库搜索功能", "红领巾知识库检索功能"]
+
+
+def test_dictionary_normalize_merges_duplicate_terms():
+    dictionary, errors, warnings = normalize_dictionary(
+        {
+            "version": "1.0",
+            "name": "测试词库",
+            "entries": [
+                {
+                    "term": " 鸿灵MCP工具 ",
+                    "pinyin": "Hong Ling MCP Gong Ju",
+                    "short": "HL-MCP",
+                    "weight": 95,
+                },
+                {
+                    "term": "鸿灵MCP工具",
+                    "pinyin": ["hong ling mcp"],
+                    "short": ["hlmcp"],
+                    "weight": 120,
+                },
+            ],
+        }
+    )
+    assert errors == []
+    assert any("term 重复" in warning for warning in warnings)
+    assert len(dictionary["entries"]) == 1
+    entry = dictionary["entries"][0]
+    assert entry["term"] == "鸿灵MCP工具"
+    assert entry["weight"] == 100
+    assert entry["pinyin"] == ["hong ling mcp gong ju", "hong ling mcp"]
+    assert entry["short"] == ["hlmcp"]
+
+
+def test_dictionary_store_import_and_query():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = DomainDictionaryStore(os.path.join(tmpdir, "cache.sqlite3"))
+        dictionary, errors, _warnings = normalize_dictionary(
+            {
+                "version": "1.0",
+                "name": "测试词库",
+                "entries": [
+                    {
+                        "term": "鸿灵MCP工具",
+                        "pinyin": ["hong ling mcp gong ju"],
+                        "short": ["hlmcp", "hlmcpgj"],
+                        "type": "module",
+                        "weight": 95,
+                        "enabled": True,
+                    },
+                    {
+                        "term": "禁用词",
+                        "pinyin": ["jin yong ci"],
+                        "weight": 99,
+                        "enabled": False,
+                    },
+                ],
+            }
+        )
+        assert errors == []
+        report = store.import_dictionary(dictionary)
+        assert report["inserted_terms"] == 2
+        assert store.get_candidates("hong ling mcp gong ju", limit=5) == ["鸿灵MCP工具"]
+        assert store.get_candidates("honglingmcpgongju", limit=5) == ["鸿灵MCP工具"]
+        assert store.get_candidates("hlmcp", limit=5) == ["鸿灵MCP工具"]
+        assert store.get_candidates("jin yong ci", limit=5) == []
+        context = store.get_context_items("honglingmcpgongjuchajian", limit=5)
+        assert [item["text"] for item in context] == ["鸿灵MCP工具"]
+
+
 def test_toggle_keybinding():
     binding = {"enabled": True, "key": "space", "modifiers": ["Control"]}
     assert matches_keybinding(IBus, IBus.KEY_space, IBus.ModifierType.CONTROL_MASK, binding)
@@ -56,5 +144,8 @@ if __name__ == "__main__":
     test_parse_candidates()
     test_cache_promote()
     test_local_candidates()
+    test_merge_candidates_keeps_source_order_and_dedupes()
+    test_dictionary_normalize_merges_duplicate_terms()
+    test_dictionary_store_import_and_query()
     test_toggle_keybinding()
     print("ok")
