@@ -174,6 +174,16 @@ class AIPinyinEngine(IBus.Engine):
                 logging.info("buffer appended buffer_len=%s", len(self.buffer))
                 return True
 
+        if self.buffer and self.accept_inline_symbol(ch):
+            max_len = self.config.get("input", {}).get("max_buffer_length", 120)
+            if len(self.buffer) < max_len:
+                self.buffer += ch
+                self.candidates = []
+                self.hide_lookup_table()
+                self.update_composition_ui()
+                logging.info("buffer symbol appended buffer_len=%s", len(self.buffer))
+                return True
+
         if self.candidates:
             self.commit_candidate(self.selected_index)
             return False
@@ -185,6 +195,9 @@ class AIPinyinEngine(IBus.Engine):
 
     def accept_char(self, ch):
         return ch.isascii() and (ch.isalpha() or ch in ["'", " "])
+
+    def accept_inline_symbol(self, ch):
+        return ch.isascii() and ch.isprintable() and not ch.isalnum() and not ch.isspace()
 
     def should_passthrough_key(self, keyval):
         return keyval in PASSTHROUGH_KEYS or IBus.KEY_F1 <= keyval <= IBus.KEY_F35
@@ -239,15 +252,8 @@ class AIPinyinEngine(IBus.Engine):
         max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
         logging.info("candidate request started chars=%s", len(pinyin))
 
-        domain_candidates = []
         dictionary_context = []
         if self.dictionary_enabled:
-            domain_candidates = self.dictionary.get_candidates(
-                pinyin,
-                limit=self.dictionary_max_candidates,
-            )
-            if domain_candidates:
-                logging.info("domain dictionary candidates count=%s", len(domain_candidates))
             dictionary_context = self.dictionary.get_context_items(
                 pinyin,
                 limit=self.dictionary_max_candidates,
@@ -266,12 +272,11 @@ class AIPinyinEngine(IBus.Engine):
             logging.info("local candidates immediate count=%s", len(local_candidates))
 
         merged = merge_candidates(
-            domain_candidates,
             cached,
             local_candidates,
             limit=max_candidates,
         )
-        if len(merged) >= max_candidates:
+        if not dictionary_context and len(merged) >= max_candidates:
             self.show_candidates(merged)
             return
 
@@ -283,7 +288,6 @@ class AIPinyinEngine(IBus.Engine):
             args=(
                 pinyin,
                 max_candidates,
-                domain_candidates,
                 cached,
                 local_candidates,
                 dictionary_context,
@@ -295,7 +299,6 @@ class AIPinyinEngine(IBus.Engine):
         self,
         pinyin,
         max_candidates,
-        domain_candidates=None,
         cached=None,
         local_candidates=None,
         dictionary_context=None,
@@ -316,7 +319,6 @@ class AIPinyinEngine(IBus.Engine):
                 logging.info("local candidates ready count=%s", len(candidates))
         if dictionary_context:
             merged = merge_candidates(
-                domain_candidates or [],
                 candidates,
                 cached or [],
                 local_candidates or [],
@@ -324,7 +326,6 @@ class AIPinyinEngine(IBus.Engine):
             )
         else:
             merged = merge_candidates(
-                domain_candidates or [],
                 cached or [],
                 local_candidates or [],
                 candidates,

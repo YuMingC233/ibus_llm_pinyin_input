@@ -11,6 +11,7 @@ from ibus_ai_pinyin.dictionary_store import DomainDictionaryStore
 from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
+from engine import AIPinyinEngine
 
 import gi
 
@@ -140,6 +141,16 @@ def test_toggle_keybinding():
     assert not matches_keybinding(IBus, IBus.KEY_a, IBus.ModifierType.CONTROL_MASK, binding)
 
 
+def test_inline_symbol_detection():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.accept_inline_symbol(",")
+    assert engine.accept_inline_symbol("?")
+    assert engine.accept_inline_symbol("-")
+    assert not engine.accept_inline_symbol("a")
+    assert not engine.accept_inline_symbol("1")
+    assert not engine.accept_inline_symbol(" ")
+
+
 if __name__ == "__main__":
     test_parse_candidates()
     test_cache_promote()
@@ -148,4 +159,5 @@ if __name__ == "__main__":
     test_dictionary_normalize_merges_duplicate_terms()
     test_dictionary_store_import_and_query()
     test_toggle_keybinding()
+    test_inline_symbol_detection()
     print("ok")
