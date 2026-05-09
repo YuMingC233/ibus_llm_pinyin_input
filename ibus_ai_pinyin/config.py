@@ -29,6 +29,12 @@ DEFAULT_CONFIG = {
     "input": {
         "max_buffer_length": 120,
         "candidate_page_size": 5,
+        "default_mode": "zh",
+        "toggle_key": {
+            "enabled": True,
+            "key": "space",
+            "modifiers": ["Control"],
+        },
     },
     "candidate": {
         "max_candidates": 5,

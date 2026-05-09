@@ -11,6 +11,8 @@
 - 拼音输入期间不把原始拼音写入当前输入框，只在 IBus 弹出区域显示输入内容和候选。
 - 用户选择候选后才提交中文到输入框。
 - 焦点切换时自动清空原始拼音、候选和辅助文本。
+- 支持快捷键切换中英文输入模式，默认 `Ctrl+Space`。
+- IBus 状态栏/面板会显示当前输入模式：`中` 或 `英`。
 - 支持 SQLite 候选缓存，常用候选会被提升排序。
 - 模型失败或超时时不会阻塞输入，可按回车提交原始拼音。
 - 支持本地常用词兜底候选。
@@ -89,6 +91,16 @@ ibus engine ai-pinyin
       "type": "disabled"
     },
     "extra_body": {}
+  },
+  "input": {
+    "max_buffer_length": 120,
+    "candidate_page_size": 5,
+    "default_mode": "zh",
+    "toggle_key": {
+      "enabled": true,
+      "key": "space",
+      "modifiers": ["Control"]
+    }
   }
 }
 ```
@@ -126,6 +138,55 @@ ibus engine ai-pinyin
 ```
 
 这适用于支持关闭思考的 OpenAI-compatible 服务。其他厂商需要额外请求字段时，可以放到 `api.extra_body`。
+
+### 中英文切换快捷键
+
+默认快捷键是 `Ctrl+Space`：
+
+```json
+{
+  "input": {
+    "default_mode": "zh",
+    "toggle_key": {
+      "enabled": true,
+      "key": "space",
+      "modifiers": ["Control"]
+    }
+  }
+}
+```
+
+`default_mode` 可设置为：
+
+```text
+zh
+en
+```
+
+英文模式下，输入法不会拦截普通按键，所有输入都会直接交给当前应用。再次按切换快捷键会回到中文模式。
+
+IBus 状态栏/面板会显示当前模式：
+
+```text
+中
+英
+```
+
+状态显示通过 IBus component 的 `icon_prop_key=InputMode` 和引擎内同名 property 实现。
+
+例如改成 `Alt+Space`：
+
+```json
+{
+  "input": {
+    "toggle_key": {
+      "enabled": true,
+      "key": "space",
+      "modifiers": ["Alt"]
+    }
+  }
+}
+```
 
 ### Ollama 示例
 

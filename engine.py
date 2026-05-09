@@ -10,11 +10,13 @@ from gi.repository import GLib, IBus
 
 from ibus_ai_pinyin.cache import CandidateCache
 from ibus_ai_pinyin.config import load_config
+from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
 
 
 LOG_PATH = os.path.expanduser("~/.cache/ibus-ai-pinyin/engine.log")
+INPUT_MODE_PROP_KEY = "InputMode"
 PASSTHROUGH_MODIFIERS = (
     IBus.ModifierType.CONTROL_MASK
     | IBus.ModifierType.MOD1_MASK
@@ -63,11 +65,21 @@ class AIPinyinEngine(IBus.Engine):
         self.candidates = []
         self.selected_index = 0
         self.is_requesting = False
+        self.input_cfg = self.config.get("input", {})
+        self.zh_mode = self.input_cfg.get("default_mode", "zh") != "en"
+        self.toggle_key = self.input_cfg.get("toggle_key", {})
 
     def do_process_key_event(self, keyval, keycode, state):
         if state & IBus.ModifierType.RELEASE_MASK:
             return False
         logging.info("key event keyval=%s keycode=%s state=%s", keyval, keycode, int(state))
+
+        if matches_keybinding(IBus, keyval, state, self.toggle_key):
+            self.toggle_input_mode()
+            return True
+
+        if not self.zh_mode:
+            return False
 
         if state & PASSTHROUGH_MODIFIERS:
             if self.buffer or self.candidates:
@@ -167,6 +179,39 @@ class AIPinyinEngine(IBus.Engine):
 
     def should_passthrough_key(self, keyval):
         return keyval in PASSTHROUGH_KEYS or IBus.KEY_F1 <= keyval <= IBus.KEY_F35
+
+    def toggle_input_mode(self):
+        self.zh_mode = not self.zh_mode
+        self.clear_all()
+        self.update_mode_property()
+        logging.info("input mode toggled mode=%s", "zh" if self.zh_mode else "en")
+
+    def register_mode_property(self):
+        prop_list = IBus.PropList()
+        prop_list.append(self.create_mode_property())
+        self.register_properties(prop_list)
+        logging.info("mode property registered mode=%s", "zh" if self.zh_mode else "en")
+
+    def update_mode_property(self):
+        self.update_property(self.create_mode_property())
+        logging.info("mode property updated mode=%s", "zh" if self.zh_mode else "en")
+
+    def create_mode_property(self):
+        label = "中" if self.zh_mode else "英"
+        tooltip = "AI 拼音输入：中文模式" if self.zh_mode else "AI 拼音输入：英文模式"
+        symbol = "中" if self.zh_mode else "英"
+        prop = IBus.Property(
+            key=INPUT_MODE_PROP_KEY,
+            type=IBus.PropType.NORMAL,
+            label=label,
+            icon="",
+            tooltip=tooltip,
+            sensitive=True,
+            visible=True,
+            state=IBus.PropState.UNCHECKED,
+            symbol=symbol,
+        )
+        return prop
 
     def update_composition_ui(self, suffix=""):
         self.update_preedit_text(IBus.Text.new_from_string(""), 0, False)
@@ -277,6 +322,11 @@ class AIPinyinEngine(IBus.Engine):
         self.is_requesting = False
         self.update_composition_ui()
         self.hide_lookup_table()
+
+    def do_focus_in(self):
+        logging.info("focus in mode=%s", "zh" if self.zh_mode else "en")
+        self.register_mode_property()
+        self.update_mode_property()
 
     def do_focus_out(self):
         logging.info("focus out buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))

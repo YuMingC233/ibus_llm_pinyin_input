@@ -5,8 +5,14 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from ibus_ai_pinyin.cache import CandidateCache
+from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
+
+import gi
+
+gi.require_version("IBus", "1.0")
+from gi.repository import IBus
 
 
 def test_parse_candidates():
@@ -39,8 +45,16 @@ def test_local_candidates():
     assert get_local_candidates("unknown", limit=5) == []
 
 
+def test_toggle_keybinding():
+    binding = {"enabled": True, "key": "space", "modifiers": ["Control"]}
+    assert matches_keybinding(IBus, IBus.KEY_space, IBus.ModifierType.CONTROL_MASK, binding)
+    assert not matches_keybinding(IBus, IBus.KEY_space, 0, binding)
+    assert not matches_keybinding(IBus, IBus.KEY_a, IBus.ModifierType.CONTROL_MASK, binding)
+
+
 if __name__ == "__main__":
     test_parse_candidates()
     test_cache_promote()
     test_local_candidates()
+    test_toggle_keybinding()
     print("ok")

@@ -20,6 +20,8 @@
       <longname>AI 拼音输入法</longname>
       <description>使用大模型将拼音转换为中文的 IBus 输入法</description>
       <rank>80</rank>
+      <symbol>中</symbol>
+      <icon_prop_key>InputMode</icon_prop_key>
     </engine>
   </engines>
 </component>
