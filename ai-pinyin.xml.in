@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component>
+  <name>org.freedesktop.IBus.AIPinyin</name>
+  <description>AI Pinyin Input Method</description>
+  <exec>__INSTALL_DIR__/run-engine.sh</exec>
+  <version>0.1.0</version>
+  <author>Volsifly</author>
+  <license>MIT</license>
+  <homepage>https://example.com</homepage>
+  <textdomain>ibus-ai-pinyin</textdomain>
+
+  <engines>
+    <engine>
+      <name>ai-pinyin</name>
+      <language>zh_CN</language>
+      <license>MIT</license>
+      <author>Volsifly</author>
+      <icon>ibus-keyboard</icon>
+      <layout>us</layout>
+      <longname>AI 拼音输入法</longname>
+      <description>使用大模型将拼音转换为中文的 IBus 输入法</description>
+      <rank>80</rank>
+    </engine>
+  </engines>
+</component>
