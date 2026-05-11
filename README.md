@@ -150,6 +150,27 @@ ibus engine ai-pinyin
 
 这适用于支持关闭思考的 OpenAI-compatible 服务。其他厂商需要额外请求字段时，可以放到 `api.extra_body`。
 
+如果服务不支持 `thinking` 请求字段，把 `thinking.enabled` 设为 `null`，客户端就不会发送该字段。NVIDIA NIM 的部分推理模型需要在 system prompt 开头加入 `/no_think` 来关闭扩展思考，例如：
+
+```json
+{
+  "api": {
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "api_key": "nvapi-...",
+    "model": "stepfun-ai/step-3.5-flash",
+    "endpoint": "/chat/completions",
+    "temperature": 0,
+    "thinking": {
+      "enabled": null,
+      "type": "disabled"
+    }
+  },
+  "prompt": {
+    "system": "/no_think\n只输出 JSON 字符串数组，不要解释，不要 Markdown。最多输出 5 个中文候选。"
+  }
+}
+```
+
 ### 中英文切换快捷键
 
 默认快捷键是 `Ctrl+Space`：

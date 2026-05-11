@@ -21,7 +21,7 @@ DEFAULT_CONFIG = {
         "stream": False,
         "proxy_enabled": False,
         "thinking": {
-            "enabled": False,
+            "enabled": None,
             "type": "disabled",
         },
         "extra_body": {},

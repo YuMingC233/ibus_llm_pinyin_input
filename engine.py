@@ -74,6 +74,7 @@ class AIPinyinEngine(IBus.Engine):
         self.candidates = []
         self.selected_index = 0
         self.is_requesting = False
+        self.request_id = 0
         self.input_cfg = self.config.get("input", {})
         self.zh_mode = self.input_cfg.get("default_mode", "zh") != "en"
         self.toggle_key = self.input_cfg.get("toggle_key", {})
@@ -115,6 +116,11 @@ class AIPinyinEngine(IBus.Engine):
                 )
                 self.clear_all()
             return False
+
+        if self.candidates and keyval in (IBus.KEY_Up, IBus.KEY_Down):
+            direction = -1 if keyval == IBus.KEY_Up else 1
+            self.move_selection(direction)
+            return True
 
         if self.should_passthrough_key(keyval):
             if self.buffer or self.candidates:
@@ -320,12 +326,18 @@ class AIPinyinEngine(IBus.Engine):
             self.show_candidates(merged)
             return
 
+        if merged:
+            self.show_candidates(merged)
+
         self.is_requesting = True
+        self.request_id += 1
+        request_id = self.request_id
         self.update_composition_ui(" ...")
 
         threading.Thread(
             target=self.fetch_candidates_worker,
             args=(
+                request_id,
                 pinyin,
                 max_candidates,
                 cached,
@@ -337,22 +349,54 @@ class AIPinyinEngine(IBus.Engine):
 
     def fetch_candidates_worker(
         self,
+        request_id,
         pinyin,
         max_candidates,
         cached=None,
         local_candidates=None,
         dictionary_context=None,
     ):
+        candidates = []
         try:
-            candidates = self.llm.get_candidates(
+            for candidate in self.llm.stream_candidates(
                 pinyin,
                 max_candidates=max_candidates,
                 dictionary_context=dictionary_context or [],
-            )
+            ):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+                    logging.info("LLM stream candidate ready count=%s", len(candidates))
+                    GLib.idle_add(
+                        self.on_candidates_delta,
+                        request_id,
+                        pinyin,
+                        list(candidates),
+                        cached or [],
+                        local_candidates or [],
+                        dictionary_context or [],
+                        max_candidates,
+                    )
             logging.info("LLM candidates ready count=%s", len(candidates))
+            if not candidates:
+                logging.info("LLM stream returned empty, falling back to non-stream")
+                candidates = self.llm.get_candidates(
+                    pinyin,
+                    max_candidates=max_candidates,
+                    dictionary_context=dictionary_context or [],
+                )
+                logging.info("LLM fallback candidates ready count=%s", len(candidates))
         except Exception as exc:
-            logging.warning("LLM request failed: %s", exc)
-            candidates = []
+            logging.warning("LLM stream request failed, falling back to non-stream: %s", exc)
+            try:
+                candidates = self.llm.get_candidates(
+                    pinyin,
+                    max_candidates=max_candidates,
+                    dictionary_context=dictionary_context or [],
+                )
+                logging.info("LLM fallback candidates ready count=%s", len(candidates))
+            except Exception as fallback_exc:
+                logging.warning("LLM fallback request failed: %s", fallback_exc)
+                candidates = []
         if not candidates:
             candidates = get_local_candidates(pinyin, limit=max_candidates)
             if candidates:
@@ -371,13 +415,45 @@ class AIPinyinEngine(IBus.Engine):
                 candidates,
                 limit=max_candidates,
             )
-        GLib.idle_add(self.on_candidates_ready, pinyin, merged)
+        GLib.idle_add(self.on_candidates_ready, request_id, pinyin, merged)
 
-    def on_candidates_ready(self, pinyin, candidates):
+    def on_candidates_delta(
+        self,
+        request_id,
+        pinyin,
+        candidates,
+        cached,
+        local_candidates,
+        dictionary_context,
+        max_candidates,
+    ):
+        current = " ".join(self.buffer.split())
+        if request_id != self.request_id or current != pinyin:
+            return False
+
+        if dictionary_context:
+            merged = merge_candidates(
+                candidates,
+                cached,
+                local_candidates,
+                limit=max_candidates,
+            )
+        else:
+            merged = merge_candidates(
+                cached,
+                local_candidates,
+                candidates,
+                limit=max_candidates,
+            )
+        if merged:
+            self.show_candidates(merged)
+        return False
+
+    def on_candidates_ready(self, request_id, pinyin, candidates):
         self.is_requesting = False
 
         current = " ".join(self.buffer.split())
-        if current != pinyin:
+        if request_id != self.request_id or current != pinyin:
             return False
 
         if candidates:
@@ -391,11 +467,14 @@ class AIPinyinEngine(IBus.Engine):
 
     def show_candidates(self, candidates):
         self.candidates = candidates
-        self.selected_index = 0
+        if self.selected_index >= len(candidates):
+            self.selected_index = len(candidates) - 1
+        if self.selected_index < 0:
+            self.selected_index = 0
 
         table = IBus.LookupTable.new(
             page_size=self.config.get("input", {}).get("candidate_page_size", 5),
-            cursor_pos=0,
+            cursor_pos=self.selected_index,
             cursor_visible=True,
             round=True,
         )
@@ -405,6 +484,13 @@ class AIPinyinEngine(IBus.Engine):
         self.update_lookup_table(table, True)
         self.update_composition_ui()
         logging.info("lookup table shown count=%s", len(candidates))
+
+    def move_selection(self, direction):
+        if not self.candidates:
+            return
+        self.selected_index = (self.selected_index + direction) % len(self.candidates)
+        self.show_candidates(self.candidates)
+        logging.info("candidate selection moved index=%s", self.selected_index)
 
     def commit_candidate(self, index):
         if not self.candidates or index >= len(self.candidates):
@@ -424,6 +510,7 @@ class AIPinyinEngine(IBus.Engine):
         self.clear_all()
 
     def clear_all(self):
+        self.request_id += 1
         self.buffer = ""
         self.candidates = []
         self.selected_index = 0

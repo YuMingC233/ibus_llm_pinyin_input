@@ -36,7 +36,7 @@ class LLMClient:
             "拼音：{pinyin}\n请输出中文候选 JSON 数组。",
         )
 
-    def get_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+    def build_request_body(self, pinyin, dictionary_context=None, stream=None):
         user_content = self.user_template.format(pinyin=pinyin)
         context_text = self.format_dictionary_context(dictionary_context or [])
         if context_text:
@@ -51,7 +51,7 @@ class LLMClient:
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
-            "stream": self.stream,
+            "stream": self.stream if stream is None else stream,
         }
         if isinstance(self.extra_body, dict):
             body.update(self.extra_body)
@@ -59,6 +59,10 @@ class LLMClient:
             body["thinking"] = {"type": self.thinking.get("type", "disabled")}
         elif isinstance(self.thinking, dict) and self.thinking.get("enabled") is True:
             body["thinking"] = {"type": self.thinking.get("type", "enabled")}
+        return body
+
+    def get_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+        body = self.build_request_body(pinyin, dictionary_context=dictionary_context or [])
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -83,7 +87,16 @@ class LLMClient:
                 resp.status_code,
                 elapsed_ms,
             )
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                logging.error(
+                    "LLM HTTP error model=%s status=%s response=%r",
+                    self.model,
+                    resp.status_code,
+                    resp.text[:1000],
+                )
+                raise
         except Exception:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             logging.exception(
@@ -106,6 +119,135 @@ class LLMClient:
         candidates = self.rank_candidates_by_context(candidates, dictionary_context or [])
         logging.info("LLM parsed candidates elapsed_ms=%s candidates=%r", elapsed_ms, candidates)
         return candidates
+
+    def stream_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+        body = self.build_request_body(
+            pinyin,
+            dictionary_context=dictionary_context or [],
+            stream=True,
+        )
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Connection": "close",
+        }
+
+        session = requests.Session()
+        session.trust_env = bool(self.proxy_enabled)
+        url = self.base_url + self.endpoint
+        start = time.monotonic()
+        content = ""
+        emitted = []
+        seen = set()
+        try:
+            resp = session.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=self.timeout,
+                stream=True,
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.info(
+                "LLM stream response received model=%s status=%s elapsed_ms=%s",
+                self.model,
+                resp.status_code,
+                elapsed_ms,
+            )
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                logging.error(
+                    "LLM stream HTTP error model=%s status=%s response=%r",
+                    self.model,
+                    resp.status_code,
+                    resp.text[:1000],
+                )
+                raise
+
+            for raw_line in resp.iter_lines(decode_unicode=False):
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.debug("LLM stream ignored non-json payload=%r", payload)
+                    continue
+                for choice in data.get("choices", []):
+                    delta = choice.get("delta") or {}
+                    message = choice.get("message") or {}
+                    chunk = (
+                        delta.get("content")
+                        or message.get("content")
+                        or data.get("content")
+                        or ""
+                    )
+                    if not chunk:
+                        continue
+                    content += chunk
+                    for candidate in self.extract_complete_candidates(content):
+                        if candidate in seen or not self.is_valid_candidate(candidate):
+                            continue
+                        seen.add(candidate)
+                        emitted.append(candidate)
+                        yield candidate
+                        if len(emitted) >= max_candidates:
+                            return
+        except Exception:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.exception(
+                "LLM stream request failed model=%s elapsed_ms=%s url=%s",
+                self.model,
+                elapsed_ms,
+                url,
+            )
+            raise
+        finally:
+            session.close()
+
+        if not emitted and content:
+            for candidate in self.parse_candidates(content, max_candidates=max_candidates):
+                if candidate not in seen:
+                    yield candidate
+
+    def extract_complete_candidates(self, content):
+        text = content.strip()
+        if "[" in text:
+            text = text[text.find("[") :]
+
+        candidates = []
+        in_string = False
+        escaped = False
+        current = []
+        for ch in text:
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                    escaped = False
+                    current = []
+                continue
+
+            if escaped:
+                current.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                candidates.append("".join(current).strip())
+                in_string = False
+                current = []
+                continue
+            current.append(ch)
+        return [candidate for candidate in candidates if candidate]
 
     def rank_candidates_by_context(self, candidates, items):
         context_terms = []

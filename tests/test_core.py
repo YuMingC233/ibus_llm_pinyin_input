@@ -36,6 +36,16 @@ def test_parse_candidates():
     ) == ["鸿灵知识库搜索功能", "鸿灵知识库检索功能"]
 
 
+def test_extract_complete_candidates_from_partial_json():
+    client = LLMClient({"api": {}, "prompt": {}})
+    assert client.extract_complete_candidates('["你好", "泥') == ["你好"]
+    assert client.extract_complete_candidates('说明：["你好", "泥好", "你\\"号"') == [
+        "你好",
+        "泥好",
+        '你"号',
+    ]
+
+
 def test_cache_promote():
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = CandidateCache(os.path.join(tmpdir, "cache.sqlite3"))
@@ -179,8 +189,22 @@ def test_caps_lock_char_detection():
     assert not engine.is_caps_lock_char("1")
 
 
+def test_move_selection_wraps_candidates():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.candidates = ["你好", "你号", "拟好"]
+    engine.selected_index = 0
+    engine.show_candidates = lambda candidates: None
+    engine.move_selection(1)
+    assert engine.selected_index == 1
+    engine.move_selection(-1)
+    assert engine.selected_index == 0
+    engine.move_selection(-1)
+    assert engine.selected_index == 2
+
+
 if __name__ == "__main__":
     test_parse_candidates()
+    test_extract_complete_candidates_from_partial_json()
     test_cache_promote()
     test_local_candidates()
     test_merge_candidates_keeps_source_order_and_dedupes()
@@ -192,4 +216,5 @@ if __name__ == "__main__":
     test_initial_char_passthrough_detection()
     test_caps_lock_state_detection()
     test_caps_lock_char_detection()
+    test_move_selection_wraps_candidates()
     print("ok")
