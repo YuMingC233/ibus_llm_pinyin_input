@@ -151,6 +151,34 @@ def test_inline_symbol_detection():
     assert not engine.accept_inline_symbol(" ")
 
 
+def test_input_char_detection_accepts_digits():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.accept_char("a")
+    assert engine.accept_char("1")
+    assert engine.accept_char("'")
+    assert not engine.accept_char(",")
+
+
+def test_initial_char_passthrough_detection():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.should_passthrough_initial_char("1")
+    assert not engine.should_passthrough_initial_char("a")
+    assert not engine.should_passthrough_initial_char("'")
+
+
+def test_caps_lock_state_detection():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.is_caps_lock_active(IBus.ModifierType.LOCK_MASK)
+    assert not engine.is_caps_lock_active(0)
+
+
+def test_caps_lock_char_detection():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.is_caps_lock_char("A")
+    assert not engine.is_caps_lock_char("a")
+    assert not engine.is_caps_lock_char("1")
+
+
 if __name__ == "__main__":
     test_parse_candidates()
     test_cache_promote()
@@ -160,4 +188,8 @@ if __name__ == "__main__":
     test_dictionary_store_import_and_query()
     test_toggle_keybinding()
     test_inline_symbol_detection()
+    test_input_char_detection_accepts_digits()
+    test_initial_char_passthrough_detection()
+    test_caps_lock_state_detection()
+    test_caps_lock_char_detection()
     print("ok")

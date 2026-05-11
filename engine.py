@@ -81,13 +81,29 @@ class AIPinyinEngine(IBus.Engine):
     def do_process_key_event(self, keyval, keycode, state):
         if state & IBus.ModifierType.RELEASE_MASK:
             return False
-        logging.info("key event keyval=%s keycode=%s state=%s", keyval, keycode, int(state))
+        logging.info(
+            "key event keyval=%s keycode=%s state=%s caps=%s",
+            keyval,
+            keycode,
+            int(state),
+            self.is_caps_lock_active(state),
+        )
 
         if matches_keybinding(IBus, keyval, state, self.toggle_key):
             self.toggle_input_mode()
             return True
 
         if not self.zh_mode:
+            return False
+
+        if self.is_caps_lock_active(state):
+            if self.buffer or self.candidates:
+                logging.info(
+                    "caps lock active clearing buffer_len=%s candidates=%s",
+                    len(self.buffer),
+                    len(self.candidates),
+                )
+                self.clear_all()
             return False
 
         if state & PASSTHROUGH_MODIFIERS:
@@ -162,6 +178,21 @@ class AIPinyinEngine(IBus.Engine):
         if not ch:
             return False
 
+        if self.is_caps_lock_char(ch):
+            if self.buffer or self.candidates:
+                logging.info(
+                    "caps lock char clearing char=%s buffer_len=%s candidates=%s",
+                    ch,
+                    len(self.buffer),
+                    len(self.candidates),
+                )
+                self.clear_all()
+            return False
+
+        if not self.buffer and not self.candidates and self.should_passthrough_initial_char(ch):
+            logging.info("initial char passthrough char=%s", ch)
+            return False
+
         if self.accept_char(ch):
             if self.candidates:
                 self.commit_candidate(self.selected_index)
@@ -194,13 +225,22 @@ class AIPinyinEngine(IBus.Engine):
         return False
 
     def accept_char(self, ch):
-        return ch.isascii() and (ch.isalpha() or ch in ["'", " "])
+        return ch.isascii() and (ch.isalnum() or ch in ["'", " "])
 
     def accept_inline_symbol(self, ch):
         return ch.isascii() and ch.isprintable() and not ch.isalnum() and not ch.isspace()
 
+    def should_passthrough_initial_char(self, ch):
+        return ch.isascii() and ch.isdigit()
+
     def should_passthrough_key(self, keyval):
         return keyval in PASSTHROUGH_KEYS or IBus.KEY_F1 <= keyval <= IBus.KEY_F35
+
+    def is_caps_lock_active(self, state):
+        return bool(state & IBus.ModifierType.LOCK_MASK)
+
+    def is_caps_lock_char(self, ch):
+        return ch.isascii() and ch.isalpha() and ch.isupper()
 
     def toggle_input_mode(self):
         self.zh_mode = not self.zh_mode
