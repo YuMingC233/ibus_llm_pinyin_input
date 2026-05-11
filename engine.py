@@ -15,6 +15,7 @@ from ibus_ai_pinyin.dictionary_store import DomainDictionaryStore
 from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
+from ibus_ai_pinyin.user_memory import UserMemoryStore
 
 
 LOG_PATH = os.path.expanduser("~/.cache/ibus-ai-pinyin/engine.log")
@@ -40,6 +41,19 @@ PASSTHROUGH_KEYS = {
     IBus.KEY_Insert,
     IBus.KEY_Delete,
 }
+
+
+def merge_context_items(*groups):
+    result = []
+    seen = set()
+    for group in groups:
+        for item in group or []:
+            text = item.get("text") if isinstance(item, dict) else None
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(item)
+    return result
 
 
 def setup_logging():
@@ -70,6 +84,13 @@ class AIPinyinEngine(IBus.Engine):
             dict_cfg.get("path", cache_cfg.get("path", "~/.config/ibus-ai-pinyin/cache.sqlite3"))
         )
 
+        memory_cfg = self.config.get("memory_dictionary", {})
+        self.memory_cfg = memory_cfg
+        self.memory_enabled = memory_cfg.get("enabled", True)
+        self.user_memory = UserMemoryStore(
+            memory_cfg.get("path", cache_cfg.get("path", "~/.config/ibus-ai-pinyin/cache.sqlite3"))
+        )
+
         self.buffer = ""
         self.candidates = []
         self.selected_index = 0
@@ -78,6 +99,14 @@ class AIPinyinEngine(IBus.Engine):
         self.input_cfg = self.config.get("input", {})
         self.zh_mode = self.input_cfg.get("default_mode", "zh") != "en"
         self.toggle_key = self.input_cfg.get("toggle_key", {})
+        self.edit_mode = False
+        self.edit_text = ""
+        self.edit_cursor = 0
+        self.edit_original_pinyin = ""
+        self.edit_original_candidate = ""
+        self.edit_candidates_snapshot = []
+        self.edit_replacement_buffer = ""
+        self.edit_replacement_candidates = []
 
     def do_process_key_event(self, keyval, keycode, state):
         if state & IBus.ModifierType.RELEASE_MASK:
@@ -97,6 +126,16 @@ class AIPinyinEngine(IBus.Engine):
         if not self.zh_mode:
             return False
 
+        if self.edit_mode:
+            return self.process_edit_key_event(keyval, state)
+
+        ctrl_digit_index = self.ctrl_digit_index(keyval, keycode, state)
+        if self.candidates and ctrl_digit_index is not None:
+            index = ctrl_digit_index
+            if index < len(self.candidates):
+                self.start_candidate_edit(index)
+                return True
+
         if self.is_caps_lock_active(state):
             if self.buffer or self.candidates:
                 logging.info(
@@ -110,7 +149,10 @@ class AIPinyinEngine(IBus.Engine):
         if state & PASSTHROUGH_MODIFIERS:
             if self.buffer or self.candidates:
                 logging.info(
-                    "passthrough shortcut clearing buffer_len=%s candidates=%s",
+                    "passthrough shortcut clearing keyval=%s keycode=%s state=%s buffer_len=%s candidates=%s",
+                    keyval,
+                    keycode,
+                    int(state),
                     len(self.buffer),
                     len(self.candidates),
                 )
@@ -242,6 +284,29 @@ class AIPinyinEngine(IBus.Engine):
     def should_passthrough_key(self, keyval):
         return keyval in PASSTHROUGH_KEYS or IBus.KEY_F1 <= keyval <= IBus.KEY_F35
 
+    def ctrl_digit_index(self, keyval, keycode=None, state=0):
+        if not state & IBus.ModifierType.CONTROL_MASK:
+            return None
+        if IBus.KEY_1 <= keyval <= IBus.KEY_9:
+            return keyval - IBus.KEY_1
+        if IBus.KEY_KP_1 <= keyval <= IBus.KEY_KP_9:
+            return keyval - IBus.KEY_KP_1
+        if keycode is not None:
+            # X11/IBus commonly reports top-row 1..9 as hardware keycodes 10..18
+            # even when Ctrl changes keyval into a non-printable control value.
+            if 10 <= keycode <= 18:
+                return keycode - 10
+            # Some Wayland/evdev paths report top-row 1..9 as keycodes 2..10.
+            if 2 <= keycode <= 10:
+                return keycode - 2
+
+        ch = IBus.keyval_to_unicode(keyval)
+        if isinstance(ch, int):
+            ch = chr(ch) if ch else ""
+        if isinstance(ch, str) and len(ch) == 1 and "1" <= ch <= "9":
+            return ord(ch) - ord("1")
+        return None
+
     def is_caps_lock_active(self, state):
         return bool(state & IBus.ModifierType.LOCK_MASK)
 
@@ -290,6 +355,207 @@ class AIPinyinEngine(IBus.Engine):
         else:
             self.update_auxiliary_text(IBus.Text.new_from_string(""), False)
 
+    def update_edit_ui(self):
+        if self.edit_replacement_buffer:
+            text = f"{self.edit_text}\n{self.edit_replacement_buffer}"
+        else:
+            text = self.edit_text
+        cursor = min(self.edit_cursor, len(self.edit_text))
+        self.update_preedit_text(IBus.Text.new_from_string(text), cursor, True)
+        self.update_auxiliary_text(IBus.Text.new_from_string("候选修改"), True)
+
+    def start_candidate_edit(self, index):
+        pinyin = " ".join(self.buffer.split())
+        self.edit_mode = True
+        self.edit_text = self.candidates[index]
+        self.edit_cursor = len(self.edit_text)
+        self.edit_original_pinyin = pinyin
+        self.edit_original_candidate = self.candidates[index]
+        self.edit_candidates_snapshot = list(self.candidates)
+        self.edit_replacement_buffer = ""
+        self.edit_replacement_candidates = []
+        self.candidates = []
+        self.hide_lookup_table()
+        self.update_edit_ui()
+        logging.info("candidate edit started candidate_len=%s", len(self.edit_text))
+
+    def process_edit_key_event(self, keyval, state):
+        if state & PASSTHROUGH_MODIFIERS and not (
+            keyval == IBus.KEY_Return and state & IBus.ModifierType.CONTROL_MASK
+        ):
+            return False
+
+        if self.edit_replacement_candidates and IBus.KEY_1 <= keyval <= IBus.KEY_9:
+            index = keyval - IBus.KEY_1
+            if index < len(self.edit_replacement_candidates):
+                self.apply_edit_replacement(self.edit_replacement_candidates[index])
+                return True
+
+        if keyval == IBus.KEY_Left:
+            self.edit_cursor = max(0, self.edit_cursor - 1)
+            self.update_edit_ui()
+            return True
+        if keyval == IBus.KEY_Right:
+            self.edit_cursor = min(len(self.edit_text), self.edit_cursor + 1)
+            self.update_edit_ui()
+            return True
+        if keyval == IBus.KEY_Home:
+            self.edit_cursor = 0
+            self.update_edit_ui()
+            return True
+        if keyval == IBus.KEY_End:
+            self.edit_cursor = len(self.edit_text)
+            self.update_edit_ui()
+            return True
+
+        if keyval == IBus.KEY_BackSpace:
+            if self.edit_replacement_buffer:
+                self.edit_replacement_buffer = self.edit_replacement_buffer[:-1]
+                self.edit_replacement_candidates = []
+                self.hide_lookup_table()
+            elif self.edit_cursor > 0:
+                self.edit_text = self.edit_text[: self.edit_cursor - 1] + self.edit_text[self.edit_cursor :]
+                self.edit_cursor -= 1
+            self.update_edit_ui()
+            return True
+        if keyval == IBus.KEY_Delete:
+            if self.edit_cursor < len(self.edit_text):
+                self.edit_text = self.edit_text[: self.edit_cursor] + self.edit_text[self.edit_cursor + 1 :]
+                self.update_edit_ui()
+                return True
+            return False
+
+        if keyval == IBus.KEY_space:
+            if self.edit_replacement_buffer:
+                self.request_edit_replacement_candidates()
+                return True
+            self.insert_edit_text(" ")
+            return True
+
+        if keyval == IBus.KEY_Return:
+            save_memory = not bool(state & IBus.ModifierType.CONTROL_MASK)
+            self.commit_edited_candidate(save_memory=save_memory)
+            return True
+
+        if keyval == IBus.KEY_Escape:
+            self.exit_candidate_edit(restore_candidates=True)
+            return True
+
+        ch = IBus.keyval_to_unicode(keyval)
+        if isinstance(ch, int):
+            if ch == 0:
+                return False
+            ch = chr(ch)
+        if not ch:
+            return False
+        if self.accept_char(ch):
+            self.edit_replacement_buffer += ch.lower()
+            self.edit_replacement_candidates = []
+            self.hide_lookup_table()
+            self.update_edit_ui()
+            return True
+        if ch.isprintable() and not ch.isspace():
+            self.insert_edit_text(ch)
+            return True
+        return False
+
+    def insert_edit_text(self, text):
+        self.edit_text = self.edit_text[: self.edit_cursor] + text + self.edit_text[self.edit_cursor :]
+        self.edit_cursor += len(text)
+        self.update_edit_ui()
+
+    def request_edit_replacement_candidates(self):
+        pinyin = " ".join(self.edit_replacement_buffer.split())
+        max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
+        candidates = get_local_candidates(pinyin, limit=max_candidates)
+        if len(candidates) < max_candidates:
+            try:
+                candidates = merge_candidates(
+                    candidates,
+                    self.llm.get_candidates(pinyin, max_candidates=max_candidates),
+                    limit=max_candidates,
+                )
+            except Exception as exc:
+                logging.warning("edit replacement candidate request failed: %s", exc)
+        self.edit_replacement_candidates = candidates
+        if candidates:
+            self.show_edit_replacement_candidates(candidates)
+        else:
+            self.insert_edit_text(self.edit_replacement_buffer)
+            self.edit_replacement_buffer = ""
+            self.update_edit_ui()
+
+    def show_edit_replacement_candidates(self, candidates):
+        table = IBus.LookupTable.new(
+            page_size=self.config.get("input", {}).get("candidate_page_size", 5),
+            cursor_pos=0,
+            cursor_visible=True,
+            round=True,
+        )
+        for candidate in candidates:
+            table.append_candidate(IBus.Text.new_from_string(candidate))
+        self.update_lookup_table(table, True)
+        self.update_edit_ui()
+
+    def apply_edit_replacement(self, text):
+        self.insert_edit_text(text)
+        self.edit_replacement_buffer = ""
+        self.edit_replacement_candidates = []
+        self.hide_lookup_table()
+        self.update_edit_ui()
+
+    def commit_edited_candidate(self, save_memory=True):
+        text = self.edit_text
+        pinyin = self.edit_original_pinyin
+        original = self.edit_original_candidate
+        self.commit_text(IBus.Text.new_from_string(text))
+        if save_memory and self.memory_enabled:
+            self.save_candidate_correction(pinyin, original, text)
+        self.clear_all()
+
+    def save_candidate_correction(self, pinyin, original, corrected):
+        if self.memory_cfg.get("record_corrections", True):
+            self.user_memory.record_correction(pinyin, original, corrected)
+        if not self.memory_cfg.get("auto_learn", True):
+            return
+        if not self.user_memory.should_auto_learn(
+            corrected,
+            min_han=self.memory_cfg.get("auto_learn_min_han", 2),
+            max_han=self.memory_cfg.get("auto_learn_max_han", 12),
+        ):
+            logging.info("candidate correction recorded without term learning corrected_len=%s", len(corrected))
+            return
+        learned = self.user_memory.learn_term(
+            corrected,
+            pinyin,
+            weight=self.memory_cfg.get("default_weight", 80),
+            max_weight=self.memory_cfg.get("max_weight", 120),
+        )
+        if learned and self.cache_enabled:
+            self.cache.put_many(pinyin, [corrected], source="user_memory")
+            self.cache.promote(pinyin, corrected)
+        logging.info("candidate correction learned=%s corrected_len=%s", learned, len(corrected))
+
+    def exit_candidate_edit(self, restore_candidates=False):
+        candidates_snapshot = list(self.edit_candidates_snapshot)
+        self.edit_mode = False
+        self.edit_text = ""
+        self.edit_cursor = 0
+        self.edit_original_pinyin = ""
+        self.edit_original_candidate = ""
+        self.edit_candidates_snapshot = []
+        self.edit_replacement_buffer = ""
+        self.edit_replacement_candidates = []
+        self.hide_lookup_table()
+        if restore_candidates:
+            self.candidates = candidates_snapshot
+            if self.candidates:
+                self.show_candidates(self.candidates)
+                return
+            self.update_composition_ui()
+        else:
+            self.update_preedit_text(IBus.Text.new_from_string(""), 0, False)
+
     def request_candidates(self):
         if self.is_requesting:
             return
@@ -299,6 +565,24 @@ class AIPinyinEngine(IBus.Engine):
         logging.info("candidate request started chars=%s", len(pinyin))
 
         dictionary_context = []
+        user_context = []
+        user_exact_candidates = []
+        if self.memory_enabled:
+            if self.memory_cfg.get("exact_match_candidate", True):
+                user_exact_candidates = self.user_memory.get_exact_candidates(
+                    pinyin,
+                    limit=max_candidates,
+                )
+                if user_exact_candidates:
+                    logging.info("user memory exact candidate count=%s", len(user_exact_candidates))
+            if self.memory_cfg.get("send_to_llm", True):
+                user_context = self.user_memory.get_context_items(
+                    pinyin,
+                    limit=self.memory_cfg.get("max_context_terms", 8),
+                )
+                if user_context:
+                    logging.info("user memory context count=%s", len(user_context))
+
         if self.dictionary_enabled:
             dictionary_context = self.dictionary.get_context_items(
                 pinyin,
@@ -318,11 +602,13 @@ class AIPinyinEngine(IBus.Engine):
             logging.info("local candidates immediate count=%s", len(local_candidates))
 
         merged = merge_candidates(
+            user_exact_candidates,
             cached,
             local_candidates,
             limit=max_candidates,
         )
-        if not dictionary_context and len(merged) >= max_candidates:
+        llm_context = merge_context_items(user_context, dictionary_context)
+        if not llm_context and len(merged) >= max_candidates:
             self.show_candidates(merged)
             return
 
@@ -342,7 +628,8 @@ class AIPinyinEngine(IBus.Engine):
                 max_candidates,
                 cached,
                 local_candidates,
-                dictionary_context,
+                llm_context,
+                user_exact_candidates,
             ),
             daemon=True,
         ).start()
@@ -355,6 +642,7 @@ class AIPinyinEngine(IBus.Engine):
         cached=None,
         local_candidates=None,
         dictionary_context=None,
+        user_exact_candidates=None,
     ):
         candidates = []
         try:
@@ -403,6 +691,7 @@ class AIPinyinEngine(IBus.Engine):
                 logging.info("local candidates ready count=%s", len(candidates))
         if dictionary_context:
             merged = merge_candidates(
+                user_exact_candidates or [],
                 candidates,
                 cached or [],
                 local_candidates or [],
@@ -410,6 +699,7 @@ class AIPinyinEngine(IBus.Engine):
             )
         else:
             merged = merge_candidates(
+                user_exact_candidates or [],
                 cached or [],
                 local_candidates or [],
                 candidates,
@@ -511,6 +801,14 @@ class AIPinyinEngine(IBus.Engine):
 
     def clear_all(self):
         self.request_id += 1
+        self.edit_mode = False
+        self.edit_text = ""
+        self.edit_cursor = 0
+        self.edit_original_pinyin = ""
+        self.edit_original_candidate = ""
+        self.edit_candidates_snapshot = []
+        self.edit_replacement_buffer = ""
+        self.edit_replacement_candidates = []
         self.buffer = ""
         self.candidates = []
         self.selected_index = 0

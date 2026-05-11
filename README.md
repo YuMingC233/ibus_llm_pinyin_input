@@ -251,6 +251,7 @@ llama-server \
 输入 nihao
 按空格请求候选
 按 1-9 选择候选
+按 Ctrl+1 到 Ctrl+9 修改对应候选
 按空格提交当前第一个候选
 按回车提交当前候选或原始拼音
 按 Esc 清空
@@ -264,6 +265,56 @@ llama-server \
 数字键按输入状态区分处理：没有拼音缓冲区时直接输入数字；已经开始输入拼音后，数字会进入缓冲区；候选列表显示时，`1-9` 继续用于选择候选。
 
 中文模式下开启 CapsLock 后，英文按键会直接交给当前应用，便于临时输入大写英文。
+
+## 候选词修改和用户动态词库
+
+候选列表显示后，可以按 `Ctrl+数字` 进入候选修改模式。例如 `Ctrl+1` 修改第一个候选。
+
+修改模式下：
+
+```text
+左右方向键 / Home / End 移动光标
+Backspace / Delete 删除文字
+输入中文或符号会直接插入
+输入拼音后按空格生成局部替换候选
+按 1-9 选择局部替换候选
+按 Enter 提交修正结果并保存记忆
+按 Ctrl+Enter 只提交，不保存记忆
+按 Esc 返回原候选列表
+```
+
+修正提交后，输入法会记录修正日志；如果修正结果包含 2 到 12 个汉字，会自动加入用户动态词库。下次输入相同完整拼音时，用户动态词会优先出现在候选里；长拼音命中用户词时，也会作为少量上下文发送给 LLM。
+
+默认配置：
+
+```json
+{
+  "memory_dictionary": {
+    "enabled": true,
+    "path": "~/.config/ibus-ai-pinyin/cache.sqlite3",
+    "auto_learn": true,
+    "send_to_llm": true,
+    "max_context_terms": 8,
+    "exact_match_candidate": true,
+    "auto_learn_min_han": 2,
+    "auto_learn_max_han": 12,
+    "default_weight": 80,
+    "max_weight": 120,
+    "record_corrections": true
+  }
+}
+```
+
+管理用户动态词库：
+
+```bash
+scripts/user-memory.py list
+scripts/user-memory.py search 鸿灵
+scripts/user-memory.py disable 鸿灵
+scripts/user-memory.py enable 鸿灵
+scripts/user-memory.py delete 鸿灵
+scripts/user-memory.py export > user-memory.dict.json
+```
 
 ## 自定义领域词库
 
@@ -366,6 +417,7 @@ ibus engine ai-pinyin
 候选来源会融合：
 
 ```text
+用户动态词库完整匹配候选
 LLM 新结果
 SQLite 历史缓存
 本地兜底候选

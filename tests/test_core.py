@@ -11,6 +11,7 @@ from ibus_ai_pinyin.dictionary_store import DomainDictionaryStore
 from ibus_ai_pinyin.keybindings import matches_keybinding
 from ibus_ai_pinyin.local_candidates import get_local_candidates
 from ibus_ai_pinyin.llm_client import LLMClient
+from ibus_ai_pinyin.user_memory import UserMemoryStore, count_han, pinyin_short
 from engine import AIPinyinEngine
 
 import gi
@@ -144,6 +145,40 @@ def test_dictionary_store_import_and_query():
         assert [item["text"] for item in context] == ["鸿灵MCP工具"]
 
 
+def test_user_memory_learns_and_queries_corrections():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = UserMemoryStore(os.path.join(tmpdir, "cache.sqlite3"))
+        store.record_correction("hongling", "红灵", "鸿灵")
+        assert store.should_auto_learn("鸿灵", min_han=2, max_han=12)
+        assert not store.should_auto_learn("鸿", min_han=2, max_han=12)
+        assert not store.should_auto_learn("今天讨论鸿灵知识库功能还需要再看一下", min_han=2, max_han=12)
+
+        assert store.learn_term("鸿灵", "hong ling", weight=80, max_weight=120)
+        assert store.get_exact_candidates("hong ling", limit=5) == ["鸿灵"]
+        assert store.get_exact_candidates("hongling", limit=5) == ["鸿灵"]
+        assert store.get_exact_candidates("hl", limit=5) == ["鸿灵"]
+        assert [item["text"] for item in store.get_context_items("honglingzhishiku", limit=5)] == ["鸿灵"]
+
+        for _ in range(10):
+            store.learn_term("鸿灵", "hong ling", weight=80, max_weight=120)
+        cur = store.conn.execute("SELECT weight, confirm_count FROM user_memory_terms WHERE term = ?", ("鸿灵",))
+        row = cur.fetchone()
+        assert row["weight"] == 120
+        assert row["confirm_count"] == 11
+        exported = store.export_dictionary()
+        assert exported["name"] == "用户动态词库"
+        assert exported["entries"][0]["term"] == "鸿灵"
+        assert store.set_enabled("鸿灵", False) == 1
+        assert store.get_exact_candidates("hongling", limit=5) == []
+        assert store.delete_term("鸿灵") == 1
+
+
+def test_user_memory_helpers():
+    assert count_han("A鸿灵1") == 2
+    assert pinyin_short("hong ling zhi shi ku") == "hlzsk"
+    assert pinyin_short("hongling") == ""
+
+
 def test_toggle_keybinding():
     binding = {"enabled": True, "key": "space", "modifiers": ["Control"]}
     assert matches_keybinding(IBus, IBus.KEY_space, IBus.ModifierType.CONTROL_MASK, binding)
@@ -202,6 +237,19 @@ def test_move_selection_wraps_candidates():
     assert engine.selected_index == 2
 
 
+def test_ctrl_digit_index_accepts_number_rows_and_keypad():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    state = IBus.ModifierType.CONTROL_MASK
+    assert engine.ctrl_digit_index(IBus.KEY_1, state=state) == 0
+    assert engine.ctrl_digit_index(IBus.KEY_9, state=state) == 8
+    assert engine.ctrl_digit_index(IBus.KEY_KP_1, state=state) == 0
+    assert engine.ctrl_digit_index(0, keycode=10, state=state) == 0
+    assert engine.ctrl_digit_index(0, keycode=18, state=state) == 8
+    assert engine.ctrl_digit_index(0, keycode=2, state=state) == 0
+    assert engine.ctrl_digit_index(0, keycode=10, state=state) == 0
+    assert engine.ctrl_digit_index(IBus.KEY_1, state=0) is None
+
+
 if __name__ == "__main__":
     test_parse_candidates()
     test_extract_complete_candidates_from_partial_json()
@@ -210,6 +258,8 @@ if __name__ == "__main__":
     test_merge_candidates_keeps_source_order_and_dedupes()
     test_dictionary_normalize_merges_duplicate_terms()
     test_dictionary_store_import_and_query()
+    test_user_memory_learns_and_queries_corrections()
+    test_user_memory_helpers()
     test_toggle_keybinding()
     test_inline_symbol_detection()
     test_input_char_detection_accepts_digits()
@@ -217,4 +267,5 @@ if __name__ == "__main__":
     test_caps_lock_state_detection()
     test_caps_lock_char_detection()
     test_move_selection_wraps_candidates()
+    test_ctrl_digit_index_accepts_number_rows_and_keypad()
     print("ok")
