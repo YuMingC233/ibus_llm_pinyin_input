@@ -62,6 +62,7 @@ class LLMClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "Connection": "close",
         }
 
         session = requests.Session()
@@ -92,6 +93,8 @@ class LLMClient:
                 url,
             )
             raise
+        finally:
+            session.close()
         data = resp.json()
         message = data["choices"][0]["message"]
         content = message.get("content") or ""

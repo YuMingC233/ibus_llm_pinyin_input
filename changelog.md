@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.3 - 2026-05-11
+
+- 修复部分 OpenAI-compatible 服务在 HTTP 长连接复用下可能出现的读超时问题：
+  - LLM 请求头增加 `Connection: close`。
+  - 请求结束后主动关闭 `requests.Session`。
+- 降低默认日志噪音：逐键输入、buffer 追加、焦点切换和模式属性刷新日志改为 debug 级别。
+
 ## 0.0.2 - 2026-05-11
 
 - 优化中文模式下的数字输入行为：

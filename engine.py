@@ -81,7 +81,7 @@ class AIPinyinEngine(IBus.Engine):
     def do_process_key_event(self, keyval, keycode, state):
         if state & IBus.ModifierType.RELEASE_MASK:
             return False
-        logging.info(
+        logging.debug(
             "key event keyval=%s keycode=%s state=%s caps=%s",
             keyval,
             keycode,
@@ -134,7 +134,7 @@ class AIPinyinEngine(IBus.Engine):
                 return True
 
         if keyval == IBus.KEY_space:
-            logging.info("space pressed buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))
+            logging.debug("space pressed buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))
             if self.candidates:
                 self.commit_candidate(self.selected_index)
                 return True
@@ -190,7 +190,7 @@ class AIPinyinEngine(IBus.Engine):
             return False
 
         if not self.buffer and not self.candidates and self.should_passthrough_initial_char(ch):
-            logging.info("initial char passthrough char=%s", ch)
+            logging.debug("initial char passthrough char=%s", ch)
             return False
 
         if self.accept_char(ch):
@@ -202,7 +202,7 @@ class AIPinyinEngine(IBus.Engine):
                 self.candidates = []
                 self.hide_lookup_table()
                 self.update_composition_ui()
-                logging.info("buffer appended buffer_len=%s", len(self.buffer))
+                logging.debug("buffer appended buffer_len=%s", len(self.buffer))
                 return True
 
         if self.buffer and self.accept_inline_symbol(ch):
@@ -212,7 +212,7 @@ class AIPinyinEngine(IBus.Engine):
                 self.candidates = []
                 self.hide_lookup_table()
                 self.update_composition_ui()
-                logging.info("buffer symbol appended buffer_len=%s", len(self.buffer))
+                logging.debug("buffer symbol appended buffer_len=%s", len(self.buffer))
                 return True
 
         if self.candidates:
@@ -252,11 +252,11 @@ class AIPinyinEngine(IBus.Engine):
         prop_list = IBus.PropList()
         prop_list.append(self.create_mode_property())
         self.register_properties(prop_list)
-        logging.info("mode property registered mode=%s", "zh" if self.zh_mode else "en")
+        logging.debug("mode property registered mode=%s", "zh" if self.zh_mode else "en")
 
     def update_mode_property(self):
         self.update_property(self.create_mode_property())
-        logging.info("mode property updated mode=%s", "zh" if self.zh_mode else "en")
+        logging.debug("mode property updated mode=%s", "zh" if self.zh_mode else "en")
 
     def create_mode_property(self):
         label = "中" if self.zh_mode else "英"
@@ -432,12 +432,12 @@ class AIPinyinEngine(IBus.Engine):
         self.hide_lookup_table()
 
     def do_focus_in(self):
-        logging.info("focus in mode=%s", "zh" if self.zh_mode else "en")
+        logging.debug("focus in mode=%s", "zh" if self.zh_mode else "en")
         self.register_mode_property()
         self.update_mode_property()
 
     def do_focus_out(self):
-        logging.info("focus out buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))
+        logging.debug("focus out buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))
         self.clear_all()
 
 
