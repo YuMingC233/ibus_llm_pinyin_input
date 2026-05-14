@@ -62,7 +62,9 @@ class LLMClient:
         return body
 
     def get_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
-        body = self.build_request_body(pinyin, dictionary_context=dictionary_context or [])
+        body = self.build_request_body(
+            pinyin, dictionary_context=dictionary_context or []
+        )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -116,8 +118,185 @@ class LLMClient:
             logging.info("LLM content empty, using reasoning_content fallback")
         logging.info("LLM raw output elapsed_ms=%s content=%r", elapsed_ms, content)
         candidates = self.parse_candidates(content, max_candidates=max_candidates)
-        candidates = self.rank_candidates_by_context(candidates, dictionary_context or [])
-        logging.info("LLM parsed candidates elapsed_ms=%s candidates=%r", elapsed_ms, candidates)
+        candidates = self.rank_candidates_by_context(
+            candidates, dictionary_context or []
+        )
+        logging.info(
+            "LLM parsed candidates elapsed_ms=%s candidates=%r", elapsed_ms, candidates
+        )
+        return candidates
+
+    def refine_candidates(
+        self, pinyin, current_candidates, instruction, max_candidates=5
+    ):
+        current_text = "\n".join(
+            f"{index + 1}. {candidate}"
+            for index, candidate in enumerate(current_candidates or [])
+        )
+        user_content = (
+            f"拼音：{pinyin}\n"
+            # f"当前候选：\n{current_text}\n"
+            f"用户补充说明：{instruction}\n"
+            "请结合补充说明，输出新的中文候选 JSON 数组。"
+            "优先保留正确候选，只调整不符合说明的候选，不要解释，不要 Markdown。"
+        )
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if isinstance(self.extra_body, dict):
+            body.update(self.extra_body)
+        if isinstance(self.thinking, dict) and self.thinking.get("enabled") is False:
+            body["thinking"] = {"type": self.thinking.get("type", "disabled")}
+        elif isinstance(self.thinking, dict) and self.thinking.get("enabled") is True:
+            body["thinking"] = {"type": self.thinking.get("type", "enabled")}
+        logging.info("LLM refinement user content=%r", user_content)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Connection": "close",
+        }
+        session = requests.Session()
+        session.trust_env = bool(self.proxy_enabled)
+        url = self.base_url + self.endpoint
+        start = time.monotonic()
+        try:
+            resp = session.post(url, headers=headers, json=body, timeout=self.timeout)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.info(
+                "LLM refinement response received model=%s status=%s elapsed_ms=%s",
+                self.model,
+                resp.status_code,
+                elapsed_ms,
+            )
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                logging.error(
+                    "LLM refinement HTTP error model=%s status=%s response=%r",
+                    self.model,
+                    resp.status_code,
+                    resp.text[:1000],
+                )
+                raise
+        except Exception:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.exception(
+                "LLM refinement request failed model=%s elapsed_ms=%s url=%s",
+                self.model,
+                elapsed_ms,
+                url,
+            )
+            raise
+        finally:
+            session.close()
+
+        data = resp.json()
+        message = data["choices"][0]["message"]
+        content = message.get("content") or message.get("reasoning_content") or ""
+        logging.info(
+            "LLM refinement raw output elapsed_ms=%s content=%r", elapsed_ms, content
+        )
+        candidates = self.parse_candidates(content, max_candidates=max_candidates)
+        logging.info(
+            "LLM refinement parsed candidates elapsed_ms=%s candidates=%r",
+            elapsed_ms,
+            candidates,
+        )
+        return candidates
+
+    def get_more_candidates(self, pinyin, excluded_candidates, max_candidates=5):
+        excluded_text = "\n".join(
+            f"{index + 1}. {candidate}"
+            for index, candidate in enumerate(excluded_candidates or [])
+        )
+        user_content = (
+            f"拼音：{pinyin}\n"
+            f"排除这些已有候选：\n{excluded_text}\n"
+            "请生成一组新的中文候选 JSON 数组。"
+            "不要输出排除列表里已有的候选，不要解释，不要 Markdown。"
+        )
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_tokens": self.max_tokens,
+            "stream": False,
+        }
+        if isinstance(self.extra_body, dict):
+            body.update(self.extra_body)
+        if isinstance(self.thinking, dict) and self.thinking.get("enabled") is False:
+            body["thinking"] = {"type": self.thinking.get("type", "disabled")}
+        elif isinstance(self.thinking, dict) and self.thinking.get("enabled") is True:
+            body["thinking"] = {"type": self.thinking.get("type", "enabled")}
+        logging.info("LLM more candidates user content=%r", user_content)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Connection": "close",
+        }
+        session = requests.Session()
+        session.trust_env = bool(self.proxy_enabled)
+        url = self.base_url + self.endpoint
+        start = time.monotonic()
+        try:
+            resp = session.post(url, headers=headers, json=body, timeout=self.timeout)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.info(
+                "LLM more candidates response received model=%s status=%s elapsed_ms=%s",
+                self.model,
+                resp.status_code,
+                elapsed_ms,
+            )
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                logging.error(
+                    "LLM more candidates HTTP error model=%s status=%s response=%r",
+                    self.model,
+                    resp.status_code,
+                    resp.text[:1000],
+                )
+                raise
+        except Exception:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logging.exception(
+                "LLM more candidates request failed model=%s elapsed_ms=%s url=%s",
+                self.model,
+                elapsed_ms,
+                url,
+            )
+            raise
+        finally:
+            session.close()
+
+        data = resp.json()
+        message = data["choices"][0]["message"]
+        content = message.get("content") or message.get("reasoning_content") or ""
+        logging.info(
+            "LLM more candidates raw output elapsed_ms=%s content=%r", elapsed_ms, content
+        )
+        candidates = self.parse_candidates(content, max_candidates=max_candidates)
+        excluded = set(excluded_candidates or [])
+        candidates = [candidate for candidate in candidates if candidate not in excluded]
+        logging.info(
+            "LLM more candidates parsed elapsed_ms=%s candidates=%r",
+            elapsed_ms,
+            candidates,
+        )
         return candidates
 
     def stream_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
@@ -213,7 +392,9 @@ class LLMClient:
             session.close()
 
         if not emitted and content:
-            for candidate in self.parse_candidates(content, max_candidates=max_candidates):
+            for candidate in self.parse_candidates(
+                content, max_candidates=max_candidates
+            ):
                 if candidate not in seen:
                     yield candidate
 

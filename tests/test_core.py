@@ -237,6 +237,84 @@ def test_move_selection_wraps_candidates():
     assert engine.selected_index == 2
 
 
+def test_candidate_note_appends_without_replacing_candidates():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.config = {"input": {"max_buffer_length": 4}}
+    engine.buffer = "nihao"
+    engine.candidates = ["你好"]
+    engine.candidate_note_buffer = ""
+    updates = []
+    engine.update_composition_ui = lambda suffix="": updates.append(suffix)
+
+    engine.append_candidate_note("x")
+
+    assert engine.candidates == ["你好"]
+    assert engine.candidate_note_buffer == "x"
+    assert updates == [""]
+
+
+def test_refined_candidates_clear_note_and_keep_lookup():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.buffer = "nihao"
+    engine.candidate_note_buffer = "不是问候"
+    engine.request_id = 3
+    engine.is_requesting = True
+    shown = []
+    engine.show_candidates = lambda candidates: shown.append(candidates)
+
+    assert engine.on_refined_candidates_ready(3, "nihao", "不是问候", ["拟好", "你好"]) is False
+
+    assert engine.is_requesting is False
+    assert engine.candidate_note_buffer == ""
+    assert shown == [["拟好", "你好"]]
+
+
+def test_more_candidates_excludes_current_page():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.buffer = "nihao"
+    engine.request_id = 4
+    engine.is_requesting = True
+    shown = []
+    engine.show_candidates = lambda candidates: shown.append(candidates)
+
+    assert engine.on_more_candidates_ready(4, "nihao", ["你好", "你号"], ["你好", "拟好"]) is False
+
+    assert engine.is_requesting is False
+    assert shown == [["拟好"]]
+
+
+def test_more_candidates_keeps_current_page_when_empty():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.buffer = "nihao"
+    engine.request_id = 5
+    engine.is_requesting = True
+    shown = []
+    engine.show_candidates = lambda candidates: shown.append(candidates)
+
+    assert engine.on_more_candidates_ready(5, "nihao", ["你好", "你号"], []) is False
+
+    assert engine.is_requesting is False
+    assert shown == [["你好", "你号"]]
+
+
+def test_candidate_page_char_shortcut_detects_plus_minus():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.is_candidate_page_char("=")
+    assert engine.is_candidate_page_char("+")
+    assert engine.is_candidate_page_char("-")
+    assert not engine.is_candidate_page_char("/")
+
+
+def test_candidate_page_key_accepts_shift_equal():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    assert engine.is_candidate_page_key(IBus.KEY_plus, 0)
+    assert engine.is_candidate_page_key(IBus.KEY_minus, 0)
+    assert engine.is_candidate_page_key(IBus.KEY_equal, 0)
+    assert engine.is_candidate_page_key(IBus.KEY_KP_Add, 0)
+    assert engine.is_candidate_page_key(IBus.KEY_equal, IBus.ModifierType.SHIFT_MASK)
+    assert not engine.is_candidate_page_key(IBus.KEY_slash, 0)
+
+
 def test_ctrl_digit_index_accepts_number_rows_and_keypad():
     engine = AIPinyinEngine.__new__(AIPinyinEngine)
     state = IBus.ModifierType.CONTROL_MASK
@@ -267,5 +345,11 @@ if __name__ == "__main__":
     test_caps_lock_state_detection()
     test_caps_lock_char_detection()
     test_move_selection_wraps_candidates()
+    test_candidate_note_appends_without_replacing_candidates()
+    test_refined_candidates_clear_note_and_keep_lookup()
+    test_more_candidates_excludes_current_page()
+    test_more_candidates_keeps_current_page_when_empty()
+    test_candidate_page_char_shortcut_detects_plus_minus()
+    test_candidate_page_key_accepts_shift_equal()
     test_ctrl_digit_index_accepts_number_rows_and_keypad()
     print("ok")

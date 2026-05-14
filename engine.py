@@ -93,6 +93,7 @@ class AIPinyinEngine(IBus.Engine):
 
         self.buffer = ""
         self.candidates = []
+        self.candidate_note_buffer = ""
         self.selected_index = 0
         self.is_requesting = False
         self.request_id = 0
@@ -181,8 +182,15 @@ class AIPinyinEngine(IBus.Engine):
                 self.commit_candidate(index)
                 return True
 
+        if self.candidates and self.is_candidate_page_key(keyval, state):
+            self.request_more_candidates()
+            return True
+
         if keyval == IBus.KEY_space:
             logging.debug("space pressed buffer_len=%s candidates=%s", len(self.buffer), len(self.candidates))
+            if self.candidates and self.candidate_note_buffer:
+                self.request_refined_candidates()
+                return True
             if self.candidates:
                 self.commit_candidate(self.selected_index)
                 return True
@@ -207,6 +215,10 @@ class AIPinyinEngine(IBus.Engine):
             return False
 
         if keyval == IBus.KEY_BackSpace:
+            if self.candidates and self.candidate_note_buffer:
+                self.candidate_note_buffer = self.candidate_note_buffer[:-1]
+                self.update_composition_ui()
+                return True
             if self.candidates:
                 self.candidates = []
                 self.hide_lookup_table()
@@ -241,9 +253,14 @@ class AIPinyinEngine(IBus.Engine):
             logging.debug("initial char passthrough char=%s", ch)
             return False
 
+        if self.candidates and self.is_candidate_page_char(ch):
+            self.request_more_candidates()
+            return True
+
         if self.accept_char(ch):
             if self.candidates:
-                self.commit_candidate(self.selected_index)
+                self.append_candidate_note(ch.lower())
+                return True
             max_len = self.config.get("input", {}).get("max_buffer_length", 120)
             if len(self.buffer) < max_len:
                 self.buffer += ch.lower()
@@ -254,6 +271,9 @@ class AIPinyinEngine(IBus.Engine):
                 return True
 
         if self.buffer and self.accept_inline_symbol(ch):
+            if self.candidates:
+                self.append_candidate_note(ch)
+                return True
             max_len = self.config.get("input", {}).get("max_buffer_length", 120)
             if len(self.buffer) < max_len:
                 self.buffer += ch
@@ -283,6 +303,20 @@ class AIPinyinEngine(IBus.Engine):
 
     def should_passthrough_key(self, keyval):
         return keyval in PASSTHROUGH_KEYS or IBus.KEY_F1 <= keyval <= IBus.KEY_F35
+
+    def is_candidate_page_key(self, keyval, state=0):
+        if keyval in (
+            IBus.KEY_equal,
+            IBus.KEY_plus,
+            IBus.KEY_minus,
+            IBus.KEY_KP_Add,
+            IBus.KEY_KP_Subtract,
+        ):
+            return True
+        return False
+
+    def is_candidate_page_char(self, ch):
+        return ch in ["=", "+", "-"]
 
     def ctrl_digit_index(self, keyval, keycode=None, state=0):
         if not state & IBus.ModifierType.CONTROL_MASK:
@@ -350,10 +384,20 @@ class AIPinyinEngine(IBus.Engine):
         self.update_preedit_text(IBus.Text.new_from_string(""), 0, False)
 
         text = self.buffer + suffix
+        if self.candidate_note_buffer:
+            text = f"{text}\n修正：{self.candidate_note_buffer}"
         if text:
             self.update_auxiliary_text(IBus.Text.new_from_string(text), True)
         else:
             self.update_auxiliary_text(IBus.Text.new_from_string(""), False)
+
+    def append_candidate_note(self, ch):
+        max_len = self.config.get("input", {}).get("max_buffer_length", 120)
+        if len(self.candidate_note_buffer) >= max_len:
+            return
+        self.candidate_note_buffer += ch
+        self.update_composition_ui()
+        logging.debug("candidate note appended chars=%s", len(self.candidate_note_buffer))
 
     def update_edit_ui(self):
         if self.edit_replacement_buffer:
@@ -634,6 +678,94 @@ class AIPinyinEngine(IBus.Engine):
             daemon=True,
         ).start()
 
+    def request_more_candidates(self):
+        pinyin = " ".join(self.buffer.split())
+        if not pinyin or not self.candidates:
+            return
+        self.candidate_note_buffer = ""
+        max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
+        excluded_candidates = list(self.candidates)
+        logging.info(
+            "more candidates request started pinyin_chars=%s excluded=%s",
+            len(pinyin),
+            len(excluded_candidates),
+        )
+
+        self.is_requesting = True
+        self.request_id += 1
+        request_id = self.request_id
+        self.update_composition_ui(" ...")
+
+        threading.Thread(
+            target=self.fetch_more_candidates_worker,
+            args=(request_id, pinyin, excluded_candidates, max_candidates),
+            daemon=True,
+        ).start()
+
+    def fetch_more_candidates_worker(
+        self,
+        request_id,
+        pinyin,
+        excluded_candidates,
+        max_candidates,
+    ):
+        try:
+            candidates = self.llm.get_more_candidates(
+                pinyin,
+                excluded_candidates,
+                max_candidates=max_candidates,
+            )
+        except Exception as exc:
+            logging.warning("LLM more candidates request failed: %s", exc)
+            candidates = []
+        GLib.idle_add(self.on_more_candidates_ready, request_id, pinyin, excluded_candidates, candidates)
+
+    def request_refined_candidates(self):
+        pinyin = " ".join(self.buffer.split())
+        instruction = " ".join(self.candidate_note_buffer.split())
+        if not pinyin or not instruction or not self.candidates:
+            return
+        max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
+        current_candidates = list(self.candidates)
+        logging.info(
+            "candidate refinement request started pinyin_chars=%s instruction_chars=%s candidates=%s",
+            len(pinyin),
+            len(instruction),
+            len(current_candidates),
+        )
+
+        self.is_requesting = True
+        self.request_id += 1
+        request_id = self.request_id
+        self.update_composition_ui(" ...")
+
+        threading.Thread(
+            target=self.fetch_refined_candidates_worker,
+            args=(request_id, pinyin, instruction, current_candidates, max_candidates),
+            daemon=True,
+        ).start()
+
+    def fetch_refined_candidates_worker(
+        self,
+        request_id,
+        pinyin,
+        instruction,
+        current_candidates,
+        max_candidates,
+    ):
+        try:
+            candidates = self.llm.refine_candidates(
+                pinyin,
+                current_candidates,
+                instruction,
+                max_candidates=max_candidates,
+            )
+        except Exception as exc:
+            logging.warning("LLM refinement request failed: %s", exc)
+            candidates = []
+        merged = merge_candidates(candidates, current_candidates, limit=max_candidates)
+        GLib.idle_add(self.on_refined_candidates_ready, request_id, pinyin, instruction, merged)
+
     def fetch_candidates_worker(
         self,
         request_id,
@@ -755,6 +887,38 @@ class AIPinyinEngine(IBus.Engine):
             self.update_composition_ui()
         return False
 
+    def on_more_candidates_ready(self, request_id, pinyin, excluded_candidates, candidates):
+        self.is_requesting = False
+
+        current = " ".join(self.buffer.split())
+        if request_id != self.request_id or current != pinyin:
+            return False
+
+        excluded = set(excluded_candidates or [])
+        fresh_candidates = [candidate for candidate in candidates if candidate not in excluded]
+        if fresh_candidates:
+            self.show_candidates(fresh_candidates)
+        else:
+            logging.info("more candidates request returned empty")
+            self.show_candidates(excluded_candidates)
+        return False
+
+    def on_refined_candidates_ready(self, request_id, pinyin, instruction, candidates):
+        self.is_requesting = False
+
+        current = " ".join(self.buffer.split())
+        current_instruction = " ".join(self.candidate_note_buffer.split())
+        if request_id != self.request_id or current != pinyin or current_instruction != instruction:
+            return False
+
+        if candidates:
+            self.candidate_note_buffer = ""
+            self.show_candidates(candidates)
+        else:
+            logging.info("candidate refinement returned empty")
+            self.update_composition_ui()
+        return False
+
     def show_candidates(self, candidates):
         self.candidates = candidates
         if self.selected_index >= len(candidates):
@@ -811,6 +975,7 @@ class AIPinyinEngine(IBus.Engine):
         self.edit_replacement_candidates = []
         self.buffer = ""
         self.candidates = []
+        self.candidate_note_buffer = ""
         self.selected_index = 0
         self.is_requesting = False
         self.update_composition_ui()
