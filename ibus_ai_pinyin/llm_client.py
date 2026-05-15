@@ -36,8 +36,17 @@ class LLMClient:
             "拼音：{pinyin}\n请输出中文候选 JSON 数组。",
         )
 
-    def build_request_body(self, pinyin, dictionary_context=None, stream=None):
+    def build_request_body(
+        self,
+        pinyin,
+        dictionary_context=None,
+        recent_committed_text=None,
+        stream=None,
+    ):
         user_content = self.user_template.format(pinyin=pinyin)
+        recent_text = self.format_recent_committed_text(recent_committed_text or "")
+        if recent_text:
+            user_content = f"{user_content}\n\n{recent_text}"
         context_text = self.format_dictionary_context(dictionary_context or [])
         if context_text:
             user_content = f"{user_content}\n\n{context_text}"
@@ -61,9 +70,17 @@ class LLMClient:
             body["thinking"] = {"type": self.thinking.get("type", "enabled")}
         return body
 
-    def get_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+    def get_candidates(
+        self,
+        pinyin,
+        max_candidates=5,
+        dictionary_context=None,
+        recent_committed_text=None,
+    ):
         body = self.build_request_body(
-            pinyin, dictionary_context=dictionary_context or []
+            pinyin,
+            dictionary_context=dictionary_context or [],
+            recent_committed_text=recent_committed_text or "",
         )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -299,10 +316,17 @@ class LLMClient:
         )
         return candidates
 
-    def stream_candidates(self, pinyin, max_candidates=5, dictionary_context=None):
+    def stream_candidates(
+        self,
+        pinyin,
+        max_candidates=5,
+        dictionary_context=None,
+        recent_committed_text=None,
+    ):
         body = self.build_request_body(
             pinyin,
             dictionary_context=dictionary_context or [],
+            recent_committed_text=recent_committed_text or "",
             stream=True,
         )
         headers = {
@@ -475,6 +499,16 @@ class LLMClient:
             + "\n".join(lines)
             + "\n请优先使用这些领域词转换拼音；如果用户输入的是长拼音短语，请把这些词自然组合进完整中文候选。"
             + "\n命中项的拼音对应输入片段时，候选中必须使用命中词文本，不要替换成同音词、近义词或常见词。"
+        )
+
+    def format_recent_committed_text(self, text):
+        text = " ".join(str(text or "").split())
+        if not text:
+            return ""
+        return (
+            "最近已输入中文："
+            + text
+            + "\n这些内容是用户已经选择并上屏的候选词，不是当前拼音；请只把它作为语境参考，保持当前拼音仍按用户输入转换。"
         )
 
     def parse_candidates(self, content, max_candidates=5):

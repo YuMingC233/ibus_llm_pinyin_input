@@ -47,6 +47,15 @@ def test_extract_complete_candidates_from_partial_json():
     ]
 
 
+def test_build_request_body_includes_recent_committed_text():
+    client = LLMClient({"api": {}, "prompt": {}})
+    body = client.build_request_body("jixu", recent_committed_text="鸿灵 知识库")
+    user_content = body["messages"][1]["content"]
+    assert "拼音：jixu" in user_content
+    assert "最近已输入中文：鸿灵 知识库" in user_content
+    assert "不是当前拼音" in user_content
+
+
 def test_cache_promote():
     with tempfile.TemporaryDirectory() as tmpdir:
         cache = CandidateCache(os.path.join(tmpdir, "cache.sqlite3"))
@@ -297,6 +306,79 @@ def test_more_candidates_keeps_current_page_when_empty():
     assert shown == [["你好", "你号"]]
 
 
+def test_more_candidates_appends_page_history_and_filters_all_previous():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.buffer = "nihao"
+    engine.request_id = 6
+    engine.is_requesting = True
+    engine.candidates = ["你好", "你号"]
+    engine.candidate_pages_pinyin = "nihao"
+    engine.candidate_pages = [["你好", "你号"], ["拟好"]]
+    engine.candidate_page_index = 1
+    engine.selected_index = 1
+    shown = []
+    engine.show_candidates = lambda candidates: shown.append(candidates)
+
+    assert engine.get_all_candidate_page_items() == ["你好", "你号", "拟好"]
+    assert engine.on_more_candidates_ready(
+        6,
+        "nihao",
+        ["你好", "你号", "拟好"],
+        ["你好", "你好啊", "拟好"],
+    ) is False
+
+    assert engine.is_requesting is False
+    assert engine.candidate_pages == [["你好", "你号"], ["拟好"], ["你好啊"]]
+    assert engine.candidate_page_index == 2
+    assert engine.selected_index == 0
+    assert shown == [["你好啊"]]
+
+
+def test_previous_candidate_page_reads_history_without_request():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.buffer = "nihao"
+    engine.candidates = ["拟好"]
+    engine.candidate_note_buffer = "x"
+    engine.candidate_pages_pinyin = "nihao"
+    engine.candidate_pages = [["你好", "你号"], ["拟好"]]
+    engine.candidate_page_index = 1
+    engine.selected_index = 1
+    shown = []
+    engine.show_candidates = lambda candidates: shown.append(candidates)
+
+    engine.show_previous_candidate_page()
+
+    assert engine.candidate_page_index == 0
+    assert engine.candidate_note_buffer == ""
+    assert engine.selected_index == 0
+    assert shown == [["你好", "你号"]]
+
+
+def test_recent_committed_context_records_candidates_only():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.config = {"input": {"recent_context_items": 3, "recent_context_chars": 10}}
+    engine.recent_committed_candidates = []
+
+    engine.record_recent_committed_candidate("你好")
+    engine.record_recent_committed_candidate("世界")
+    engine.record_recent_committed_candidate("继续")
+
+    assert engine.get_recent_committed_context() == "你好 世界 继续"
+
+
+def test_recent_committed_context_respects_limits():
+    engine = AIPinyinEngine.__new__(AIPinyinEngine)
+    engine.config = {"input": {"recent_context_items": 2, "recent_context_chars": 4}}
+    engine.recent_committed_candidates = []
+
+    engine.record_recent_committed_candidate("你好")
+    engine.record_recent_committed_candidate("世界")
+    engine.record_recent_committed_candidate("继续")
+
+    assert engine.recent_committed_candidates == ["世界", "继续"]
+    assert engine.get_recent_committed_context() == "继续"
+
+
 def test_candidate_page_char_shortcut_detects_plus_minus():
     engine = AIPinyinEngine.__new__(AIPinyinEngine)
     assert engine.is_candidate_page_char("=")
@@ -331,6 +413,7 @@ def test_ctrl_digit_index_accepts_number_rows_and_keypad():
 if __name__ == "__main__":
     test_parse_candidates()
     test_extract_complete_candidates_from_partial_json()
+    test_build_request_body_includes_recent_committed_text()
     test_cache_promote()
     test_local_candidates()
     test_merge_candidates_keeps_source_order_and_dedupes()
@@ -349,6 +432,10 @@ if __name__ == "__main__":
     test_refined_candidates_clear_note_and_keep_lookup()
     test_more_candidates_excludes_current_page()
     test_more_candidates_keeps_current_page_when_empty()
+    test_more_candidates_appends_page_history_and_filters_all_previous()
+    test_previous_candidate_page_reads_history_without_request()
+    test_recent_committed_context_records_candidates_only()
+    test_recent_committed_context_respects_limits()
     test_candidate_page_char_shortcut_detects_plus_minus()
     test_candidate_page_key_accepts_shift_equal()
     test_ctrl_digit_index_accepts_number_rows_and_keypad()
