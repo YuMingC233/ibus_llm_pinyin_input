@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import os
+import subprocess
 import threading
 
 import gi
@@ -20,6 +21,7 @@ from ibus_ai_pinyin.user_memory import UserMemoryStore
 
 LOG_PATH = os.path.expanduser("~/.cache/ibus-ai-pinyin/engine.log")
 INPUT_MODE_PROP_KEY = "InputMode"
+SETUP_PROP_KEY = "Setup"
 PASSTHROUGH_MODIFIERS = (
     IBus.ModifierType.CONTROL_MASK
     | IBus.ModifierType.MOD1_MASK
@@ -434,6 +436,7 @@ class AIPinyinEngine(IBus.Engine):
     def register_mode_property(self):
         prop_list = IBus.PropList()
         prop_list.append(self.create_mode_property())
+        prop_list.append(self.create_setup_property())
         self.register_properties(prop_list)
         logging.debug("mode property registered mode=%s", "zh" if self.zh_mode else "en")
 
@@ -457,6 +460,31 @@ class AIPinyinEngine(IBus.Engine):
             symbol=symbol,
         )
         return prop
+
+    def create_setup_property(self):
+        prop = IBus.Property(
+            key=SETUP_PROP_KEY,
+            type=IBus.PropType.NORMAL,
+            label="首选项 ⚙",
+            icon="",
+            tooltip="打开首选项",
+            sensitive=True,
+            visible=True,
+            state=IBus.PropState.UNCHECKED,
+            symbol="⚙",
+        )
+        return prop
+
+    def do_property_activate(self, prop_name, prop_state):
+        if prop_name == SETUP_PROP_KEY:
+            setup_script = os.path.expanduser(
+                "~/.local/share/ibus-ai-pinyin/ibus-setup-ai-pinyin"
+            )
+            try:
+                subprocess.Popen([setup_script])
+            except Exception as exc:
+                logging.warning("failed to launch setup: %s", exc)
+        super().do_property_activate(prop_name, prop_state)
 
     def update_composition_ui(self, suffix=""):
         self.update_preedit_text(IBus.Text.new_from_string(""), 0, False)
