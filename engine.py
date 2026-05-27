@@ -754,11 +754,50 @@ class AIPinyinEngine(IBus.Engine):
         self.candidate_note_buffer = ""
         max_candidates = self.config.get("candidate", {}).get("max_candidates", 5)
         excluded_candidates = self.get_all_candidate_page_items()
+        excluded_set = set(excluded_candidates)
+
+        # 1. Check local sources before hitting LLM (cache-first pagination)
+        local_found = []
+
+        if self.cache_enabled:
+            cached_all = self.cache.get(pinyin, limit=max_candidates * 5)
+            local_found.extend(c for c in cached_all if c not in excluded_set)
+
+        if self.memory_enabled and self.memory_cfg.get("exact_match_candidate", True):
+            try:
+                mem_candidates = self.user_memory.get_exact_candidates(
+                    pinyin, limit=max_candidates
+                )
+                excluded_set.update(local_found)
+                local_found.extend(c for c in mem_candidates if c not in excluded_set)
+            except Exception:
+                pass
+
+        try:
+            local_cands = get_local_candidates(pinyin, limit=max_candidates)
+            excluded_set.update(local_found)
+            local_found.extend(c for c in local_cands if c not in excluded_set)
+        except Exception:
+            pass
+
+        merged_local = list(dict.fromkeys(local_found))[:max_candidates]
+
+        if len(merged_local) >= max_candidates:
+            # Enough from local sources — skip LLM
+            logging.info(
+                "more candidates from local sources pinyin_chars=%s found=%s",
+                len(pinyin),
+                len(merged_local),
+            )
+            self._append_new_candidate_page(merged_local)
+            return
+
         logging.info(
-            "more candidates request started pinyin_chars=%s pages=%s excluded=%s",
+            "more candidates request started pinyin_chars=%s pages=%s excluded=%s local=%s",
             len(pinyin),
             len(self.candidate_pages),
             len(excluded_candidates),
+            len(merged_local),
         )
 
         self.is_requesting = True
@@ -768,9 +807,17 @@ class AIPinyinEngine(IBus.Engine):
 
         threading.Thread(
             target=self.fetch_more_candidates_worker,
-            args=(request_id, pinyin, excluded_candidates, max_candidates),
+            args=(request_id, pinyin, excluded_candidates, max_candidates, merged_local),
             daemon=True,
         ).start()
+
+    def _append_new_candidate_page(self, candidates):
+        """Add a new page of candidates to history and display it."""
+        self.candidate_pages = self.candidate_pages[: self.candidate_page_index + 1]
+        self.candidate_pages.append(list(candidates))
+        self.candidate_page_index = len(self.candidate_pages) - 1
+        self.selected_index = 0
+        self.show_candidates(candidates)
 
     def fetch_more_candidates_worker(
         self,
@@ -778,6 +825,7 @@ class AIPinyinEngine(IBus.Engine):
         pinyin,
         excluded_candidates,
         max_candidates,
+        local_found=None,
     ):
         try:
             candidates = self.llm.get_more_candidates(
@@ -788,6 +836,8 @@ class AIPinyinEngine(IBus.Engine):
         except Exception as exc:
             logging.warning("LLM more candidates request failed: %s", exc)
             candidates = []
+        if local_found:
+            candidates = merge_candidates(local_found, candidates, limit=max_candidates)
         GLib.idle_add(self.on_more_candidates_ready, request_id, pinyin, excluded_candidates, candidates)
 
     def request_refined_candidates(self):
