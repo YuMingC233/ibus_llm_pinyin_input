@@ -76,6 +76,8 @@ ibus restart
 ibus engine ai-pinyin
 ```
 
+也可以通过 IBus 面板或输入法列表中的 **Preferences（首选项）** 按钮打开设置窗口（v0.0.7+），无需手动编辑配置文件。
+
 默认配置使用本地 OpenAI-compatible 服务：
 
 ```json
