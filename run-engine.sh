@@ -8,4 +8,14 @@ if [[ ! -x "${PYTHON}" ]]; then
   PYTHON="$(command -v python3)"
 fi
 
+# Fall back to system python3 if the resolved python3 lacks gi (e.g. conda envs)
+if ! "${PYTHON}" -c "import gi" 2>/dev/null; then
+  for candidate in /usr/bin/python3 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3.10; do
+    if "${candidate}" -c "import gi" 2>/dev/null; then
+      PYTHON="${candidate}"
+      break
+    fi
+  done
+fi
+
 exec "${PYTHON}" "${INSTALL_DIR}/engine.py"

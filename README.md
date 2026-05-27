@@ -43,7 +43,7 @@ im-config -n ibus
 
 ```bash
 chmod +x scripts/install-user.sh
-./scripts/install-user.sh
+sudo ./scripts/install-user.sh
 ibus restart
 ```
 
@@ -452,6 +452,7 @@ truncate -s 0 ~/.cache/ibus-ai-pinyin/engine.log
 ```
 
 ## 开发验证
+### 请务必保证 python 版本 >= 3.10
 
 ```bash
 python3 -m py_compile engine.py ibus_ai_pinyin/*.py tests/*.py
