@@ -215,6 +215,32 @@ IBus 状态栏/面板会显示当前模式：
 
 状态显示通过 IBus component 的 `icon_prop_key=InputMode` 和引擎内同名 property 实现。
 
+### 双拼支持
+
+输入法支持四种双拼方案，启用后每两个按键对应一个拼音音节：
+
+```json
+{
+  "input": {
+    "shuangpin": {
+      "enabled": true,
+      "scheme": "xiaohe"
+    }
+  }
+}
+```
+
+`scheme` 可选值：
+
+| 值 | 方案 |
+|---|---|
+| `xiaohe` | 小鹤双拼 |
+| `ziranma` | 自然码 |
+| `microsoft` | 微软双拼 |
+| `sogou` | 搜狗双拼 |
+
+启用双拼后，缓冲区只接受小写英文字母，空格和标点不会进入缓冲区。
+
 例如改成 `Alt+Space`：
 
 ```json

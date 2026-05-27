@@ -35,6 +35,10 @@ DEFAULT_CONFIG = {
             "key": "space",
             "modifiers": ["Control"],
         },
+        "shuangpin": {
+            "enabled": False,
+            "scheme": "xiaohe",
+        },
     },
     "candidate": {
         "max_candidates": 5,
