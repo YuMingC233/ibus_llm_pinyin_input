@@ -100,6 +100,7 @@ class AIPinyinEngine(IBus.Engine):
         self.input_cfg = self.config.get("input", {})
         self.zh_mode = self.input_cfg.get("default_mode", "zh") != "en"
         self.toggle_key = self.input_cfg.get("toggle_key", {})
+        self._auto_request_timer_id = 0
         self.edit_mode = False
         self.edit_text = ""
         self.edit_cursor = 0
@@ -232,6 +233,7 @@ class AIPinyinEngine(IBus.Engine):
             if self.buffer:
                 self.buffer = self.buffer[:-1]
                 self.update_composition_ui()
+                self._reset_auto_request_timer()
                 return True
             return False
 
@@ -273,6 +275,7 @@ class AIPinyinEngine(IBus.Engine):
                 self.reset_candidate_page_history()
                 self.hide_lookup_table()
                 self.update_composition_ui()
+                self._reset_auto_request_timer()
                 logging.debug("buffer appended buffer_len=%s", len(self.buffer))
                 return True
 
@@ -287,6 +290,7 @@ class AIPinyinEngine(IBus.Engine):
                 self.reset_candidate_page_history()
                 self.hide_lookup_table()
                 self.update_composition_ui()
+                self._reset_auto_request_timer()
                 logging.debug("buffer symbol appended buffer_len=%s", len(self.buffer))
                 return True
 
@@ -391,6 +395,41 @@ class AIPinyinEngine(IBus.Engine):
         self.clear_all()
         self.update_mode_property()
         logging.info("input mode toggled mode=%s", "zh" if self.zh_mode else "en")
+
+    # ── Auto-request timer (debounce) ──────────────────────────────
+
+    def _reset_auto_request_timer(self):
+        """Reset the one-shot auto-request timer. Call on every buffer change."""
+        if self._auto_request_timer_id:
+            GLib.source_remove(self._auto_request_timer_id)
+            self._auto_request_timer_id = 0
+
+        cfg = self.input_cfg.get("auto_request", {})
+        if not cfg.get("enabled", False):
+            return
+        if not self.buffer or self.candidates or self.edit_mode or self.is_requesting:
+            return
+
+        delay = cfg.get("delay_ms", 1500)
+        self._auto_request_timer_id = GLib.timeout_add(
+            delay, self._on_auto_request_timer
+        )
+
+    def _on_auto_request_timer(self):
+        """Fires when the user has stopped typing for the configured delay."""
+        self._auto_request_timer_id = 0
+        if not self.buffer or self.candidates or self.edit_mode or self.is_requesting:
+            return False
+        self.request_candidates()
+        return False  # one-shot
+
+    def _cancel_auto_request_timer(self):
+        """Cancel the auto-request timer without firing."""
+        if self._auto_request_timer_id:
+            GLib.source_remove(self._auto_request_timer_id)
+            self._auto_request_timer_id = 0
+
+    # ────────────────────────────────────────────────────────────────
 
     def register_mode_property(self):
         prop_list = IBus.PropList()
@@ -1172,6 +1211,7 @@ class AIPinyinEngine(IBus.Engine):
         self.buffer = ""
         self.candidates = []
         self.candidate_note_buffer = ""
+        self._cancel_auto_request_timer()
         self.reset_candidate_page_history()
         self.selected_index = 0
         self.is_requesting = False

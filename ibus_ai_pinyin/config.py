@@ -39,6 +39,10 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "scheme": "xiaohe",
         },
+        "auto_request": {
+            "enabled": False,
+            "delay_ms": 1500,
+        },
     },
     "candidate": {
         "max_candidates": 5,
